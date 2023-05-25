@@ -1,0 +1,129 @@
+<html>
+
+<head>
+    <title>Doodle AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <h2>Doodle AI</h2>
+        <div id="toolbar">
+            <div class="card">
+                <div class="card-header">
+                    <strong>Design Space</strong>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="col-12">
+                    <p>Draw and label an image to be added to the training set</p>
+
+                    <label for="stroke">Stroke</label>
+                    <input id="stroke" name='stroke' type="color">
+                    <label for="lineWidth">Line Width</label>
+                    <input id="lineWidth" name='lineWidth' type="number" value="2">
+                    <button type="button" id="clear" class="btn btn-sm btn-primary">Clear</button>
+                    <button type="button" onclick="saveImage();" class="btn btn-sm btn-primary">Save</button>
+                </div>
+                <div class="col-12">
+                    <canvas id="scratchPad"
+                        style="width: 224px; height: 224px; outline: gray 5px solid; margin: 5px"></canvas>
+                    </div>
+                <div class="col-12">
+                    <input id="imageLabel" type="text" placeholder="Label of drawing" style="margin: 5px"></input>
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <strong>Resulting Drawing</strong>
+            </div>
+        </div>
+        <div class="card-body">
+            <img id="resultImage"></img>
+        </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
+        <!-- <script src="canvastobmp.js"></script> -->
+        <script src="drawer.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/webgpu-torch@latest/torch.js"></script>
+        <script>
+            initDraw();
+
+            async function saveImage() {
+                const image = document.getElementById("resultImage");
+                const canvas = document.getElementById('scratchPad');
+                const base64Image = getImage();
+
+                image.src = base64Image;
+
+                //image.src = CanvasToBMP.toDataURL(scratchPad);
+                //console.log(image.scr);
+
+                //const blob = CanvasToBMP.toBlob(scratchPad);
+                //console.log(blob);
+                
+                const idata = canvas.getContext("2d", { willReadFrequently: true })
+                    .getImageData(0, 0, canvas.width, canvas.height),
+                    //data32 = new Uint32Array(idata.data.buffer) // 32-bit representation of canvas
+                    data8 = new Uint8Array(idata.data.buffer) // 8-bit representation of canvas
+
+                //console.log(data8);
+
+                // Remove alpha channel
+                let noAlphaImage = [];
+
+                for (var i = 0; i < data8.length; i++) {
+
+                    if (i % 4 !== 3) {
+                        noAlphaImage.push(data8[i]);
+                    }
+                }
+
+                console.log(noAlphaImage);
+                
+                const WIDTH = 224, HEIGHT = 224, PIXEL = 3;
+                var destImage = [];
+                
+                for (var w = 0; w < WIDTH; w++)
+                {
+                    destImage[w] = [];
+                    for (var h = 0; h < HEIGHT; h++)
+                    {
+                        destImage[w][h] = [];
+                        for (var p = 0; p < PIXEL; p++)
+                        {
+                            const destIndex = (w * HEIGHT * PIXEL) + (h * PIXEL) + (p);
+                            destImage[w][h][p] = noAlphaImage[destIndex];      
+                        }
+                    }
+                }                
+                console.log(destImage);
+
+                if (!await torch.initWebGPUAsync()) {
+                    console.warn('WebGPU is not supported.');
+                }
+
+                const imgTorch = torch.tensor(destImage, 'uint8');
+                const abs = torch.abs(imgTorch);
+                console.log(abs);
+            }
+
+            // async function run() {
+            //     if (!await torch.initWebGPUAsync()) {
+            //         console.warn('WebGPU is not supported.');
+            //     }
+            //     const a = torch.tensor([[-1, 2, -3], [4, -5, 6]]);
+            //     const abs = torch.abs(a);
+            //     const abs2 = a.abs();
+
+            //     const b = torch.tensor([[7, -8, 9], [-10, 11, -12]]);
+            //     const sum = torch.add(a, b);
+            //     const sum2 = a.add(b);
+            //     console.log(sum2);
+            // }
+            // run();
+        </script>
+</body>
+
+</html>
