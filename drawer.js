@@ -27,13 +27,17 @@ function initDraw() {
 	let isPainting = false;
 	let lineWidth = 2;
 
-	toolbar.addEventListener('click', e => {
+	const toolbarClick = (e) => {
 		if (e.target.id === 'clear') {
 			ctx.clearRect(0, 0, canvas.width, canvas.height);
 			ctx.fillStyle = "white";
 			ctx.fillRect(0, 0, canvas.width, canvas.height);
 		}
-	});
+	};
+
+	toolbar.addEventListener('click', toolbarClick);
+
+	toolbar.addEventListener('touchstart', toolbarClick);
 
 	toolbar.addEventListener('change', e => {
 		if (e.target.id === 'stroke') {
@@ -45,20 +49,27 @@ function initDraw() {
 		}
 	});
 
-	canvas.addEventListener('mousedown', (e) => {
+	
+	const canvasMouseDown = (e) => {
 		isPainting = true;
 		const color = document.getElementById('stroke');
 		ctx.strokeStyle = color.value;
 
 		startX = e.clientX;
 		startY = e.clientY;
-	});
+	};
 
-	canvas.addEventListener('mouseup', e => {
+	canvas.addEventListener('mousedown', canvasMouseDown);
+	canvas.addEventListener('touchstart', canvasMouseDown);
+	
+	const canvasMouseUp = (e) => {
 		isPainting = false;
 		ctx.stroke();
 		ctx.beginPath();
-	});
+	};
+	
+	canvas.addEventListener('mouseup', canvasMouseUp);
+	canvas.addEventListener('touchend', canvasMouseUp);
 
 
 	const drawFunc = (e) => {
@@ -93,4 +104,5 @@ function initDraw() {
 	}
 
 	canvas.addEventListener('mousemove', drawFunc);
+	canvas.addEventListener('touchmove', drawFunc);
 }
