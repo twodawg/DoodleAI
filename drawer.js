@@ -36,7 +36,6 @@ function initDraw() {
 	};
 
 	toolbar.addEventListener('click', toolbarClick);
-
 	toolbar.addEventListener('touchstart', toolbarClick);
 
 	toolbar.addEventListener('change', e => {
@@ -102,7 +101,8 @@ function initDraw() {
 			y: evt.clientY - rect.top
 		};
 	}
+	function touchMove(e) { drawFunc(e.touches[0]); e.preventDefault(); };
 
 	canvas.addEventListener('mousemove', drawFunc);
-	canvas.addEventListener('touchmove', drawFunc);
+	canvas.addEventListener('touchmove', touchMove);
 }
