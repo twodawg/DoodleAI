@@ -18,13 +18,11 @@
                 <div class="col-12">
                     <p>Draw and label an image to be added to the training set</p>
 
-                    <label for="stroke">Stroke</label>
+                    <label for="stroke">Color</label>
                     <input id="stroke" name='stroke' type="color">
                     <label for="lineWidth">Line Width</label>
                     <input id="lineWidth" name='lineWidth' type="number" value="2">
                     <button type="button" id="clear" class="btn btn-sm btn-primary">Clear</button>
-                    <button type="button" onclick="saveImage();" class="btn btn-sm btn-primary">Save</button>
-                    <button type="button" onclick="downloadImage();" class="btn btn-sm btn-primary">Download</button>
                 </div>
                 <div class="col-12">
                     <canvas id="scratchPad"
@@ -32,6 +30,8 @@
                     </div>
                 <div class="col-12">
                     <input id="imageLabel" type="text" placeholder="Label of drawing" style="margin: 5px"></input>
+                    <button type="button" onclick="saveImage();" class="btn btn-sm btn-primary">Save</button>
+                    <button type="button" onclick="downloadImage();" class="btn btn-sm btn-primary">Download</button>
                 </div>
             </div>
         </div>
@@ -41,7 +41,12 @@
             </div>
         </div>
         <div class="card-body">
-            <img id="resultImage"></img>
+            <div class="col-12">
+                <img id="resultImage"></img>
+            </div>
+            <div class="col-12">
+                <input id="resultLabel" type="text" readonly hidden></input>
+            </div>
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
@@ -69,11 +74,15 @@
             }
 
             async function saveImage() {
-                const image = document.getElementById("resultImage");
                 const canvas = document.getElementById('scratchPad');
-                const base64Image = getImage();
+                const imageLabel = document.getElementById("imageLabel");
+                const resultImage = document.getElementById("resultImage");
+                const resultLabel = document.getElementById("resultLabel");
 
-                image.src = base64Image;
+                const base64Image = getImage();
+                resultImage.src = base64Image;
+                resultLabel.value = imageLabel.value;
+                resultLabel.hidden = false;
 
                 //image.src = CanvasToBMP.toDataURL(scratchPad);
                 //console.log(image.scr);
