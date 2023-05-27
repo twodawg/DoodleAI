@@ -73,43 +73,8 @@
                 a.click();
             }
 
-            async function saveImage() {
-                const canvas = document.getElementById('scratchPad');
-                const imageLabel = document.getElementById("imageLabel");
-                const resultImage = document.getElementById("resultImage");
-                const resultLabel = document.getElementById("resultLabel");
-
-                const base64Image = getImage();
-                resultImage.src = base64Image;
-                resultLabel.value = imageLabel.value;
-                resultLabel.hidden = false;
-
-                //image.src = CanvasToBMP.toDataURL(scratchPad);
-                //console.log(image.scr);
-
-                //const blob = CanvasToBMP.toBlob(scratchPad);
-                //console.log(blob);
-                
-                const idata = canvas.getContext("2d", { willReadFrequently: true })
-                    .getImageData(0, 0, canvas.width, canvas.height),
-                    //data32 = new Uint32Array(idata.data.buffer) // 32-bit representation of canvas
-                    data8 = new Uint8Array(idata.data.buffer) // 8-bit representation of canvas
-
-                //console.log(data8);
-
-                // Remove alpha channel
-                let noAlphaImage = [];
-
-                for (var i = 0; i < data8.length; i++) {
-
-                    if (i % 4 !== 3) {
-                        noAlphaImage.push(data8[i]);
-                    }
-                }
-
-                console.log(noAlphaImage);
-                
-                const WIDTH = 224, HEIGHT = 224, PIXEL = 3;
+            function reshapeArray(noAlphaImage, WIDTH, HEIGHT, PIXEL) {
+                //const WIDTH = 224, HEIGHT = 224, PIXEL = 3;
                 var destImage = [];
                 
                 for (var w = 0; w < WIDTH; w++)
@@ -124,8 +89,46 @@
                             destImage[w][h][p] = noAlphaImage[destIndex];      
                         }
                     }
-                }                
-                console.log(destImage);
+                }   
+                return destImage;     
+            }
+
+            function removeAlphaChannel(rgba) {
+                let noAlphaImage = [];
+
+                for (var i = 0; i < rgba.length; i++) {
+
+                    if (i % 4 !== 3) {
+                        noAlphaImage.push(rgba[i]);
+                    }
+                }
+                return noAlphaImage;
+            }
+
+            async function saveImage() {
+                const canvas = document.getElementById('scratchPad');
+                const imageLabel = document.getElementById("imageLabel");
+                const resultImage = document.getElementById("resultImage");
+                const resultLabel = document.getElementById("resultLabel");
+
+                const base64Image = getImage();
+                resultImage.src = base64Image;
+                resultLabel.value = imageLabel.value;
+                resultLabel.hidden = false;
+                
+                const idata = canvas.getContext("2d", { willReadFrequently: true })
+                    .getImageData(0, 0, canvas.width, canvas.height);
+                const rgba = new Uint8Array(idata.data.buffer); // 8-bit representation of canvas
+
+                //console.log(data8);
+
+                const noAlphaImage = removeAlphaChannel(rgba);
+
+                //console.log(noAlphaImage);
+                
+                const destImage = reshapeArray(noAlphaImage, 224, 224, 3);
+                        
+                //console.log(destImage);
 
                 if (!await torch.initWebGPUAsync()) {
                     console.warn('WebGPU is not supported.');
