@@ -2,6 +2,8 @@
 
 Use web generated art to train AI all in the browser with WebGPU.
 
+Try out the site here: https://twodawg.github.io/DoodleAI/
+
 This project uses https://github.com/praeclarum/webgpu-torch Please support that project as much as possible.
 
 The goals of this project:

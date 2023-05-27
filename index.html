@@ -24,6 +24,7 @@
                     <input id="lineWidth" name='lineWidth' type="number" value="2">
                     <button type="button" id="clear" class="btn btn-sm btn-primary">Clear</button>
                     <button type="button" onclick="saveImage();" class="btn btn-sm btn-primary">Save</button>
+                    <button type="button" onclick="downloadImage();" class="btn btn-sm btn-primary">Download</button>
                 </div>
                 <div class="col-12">
                     <canvas id="scratchPad"
@@ -49,6 +50,23 @@
         <script src="https://cdn.jsdelivr.net/npm/webgpu-torch@latest/torch.js"></script>
         <script>
             initDraw();
+
+            function downloadImage() {
+                const image = document.getElementById("scratchPad");
+                const imageLabel = document.getElementById("imageLabel");
+                const a = document.createElement("a");
+                a.href = getImage();
+
+                if (imageLabel.value !== "")
+                {
+                    a.download = imageLabel.value + ".png";
+                }
+                else
+                {
+                    a.download = "DoddleAI.png";
+                }
+                a.click();
+            }
 
             async function saveImage() {
                 const image = document.getElementById("resultImage");
