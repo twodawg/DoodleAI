@@ -8,6 +8,8 @@
 <body>
     <div class="container">
         <h2>Doodle AI</h2>
+
+        <!-- Design Space -->
         <div id="toolbar">
             <div class="card">
                 <div class="card-header">
@@ -16,8 +18,7 @@
             </div>
             <div class="card-body">
                 <div class="col-12">
-                    <p>Draw and label an image to be added to the training set</p>
-
+                    <p>Draw an image, add a label, then click <em>Add to Training Set</em>.</p>
                     <label for="stroke">Color</label>
                     <input id="stroke" name='stroke' type="color">
                     <label for="lineWidth">Line Width</label>
@@ -27,17 +28,51 @@
                 <div class="col-12">
                     <canvas id="scratchPad"
                         style="width: 224px; height: 224px; outline: gray 5px solid; margin: 5px"></canvas>
-                    </div>
+                </div>
                 <div class="col-12">
-                    <input id="imageLabel" type="text" placeholder="Label of drawing" style="margin: 5px"></input>
-                    <button type="button" onclick="saveImage();" class="btn btn-sm btn-primary">Process</button>
-                    <button type="button" onclick="downloadImage();" class="btn btn-sm btn-primary">Download</button>
+                    <input id="imageLabel" type="text" placeholder="Label of drawing" style="margin: 5px">
+                    <button type="button" onclick="addToTrainingSet();" class="btn btn-sm btn-success">Add to Training Set</button>
+                    <button type="button" onclick="predictDrawing();" class="btn btn-sm btn-info">Predict</button>
+                    <button type="button" onclick="downloadImage();" class="btn btn-sm btn-secondary">Download</button>
+                </div>
+                <div class="col-12 mt-2" id="addFeedback" style="display:none;">
+                    <div id="addFeedbackMsg" class="alert alert-success py-1"></div>
+                </div>
+                <div class="col-12 mt-2" id="predictionResult" style="display:none;">
+                    <div class="alert alert-primary py-1">
+                        Prediction: <strong id="predLabel"></strong>
+                        (<span id="predConfidence"></span>% confidence)
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="card">
+
+        <!-- Training Set -->
+        <div class="card mt-3">
             <div class="card-header">
-                <strong>Resulting Drawing</strong>
+                <strong>Training Set</strong>
+            </div>
+            <div class="card-body">
+                <div id="trainingStats" class="mb-2 text-muted">No samples collected yet.</div>
+                <button type="button" onclick="trainModel();" id="trainBtn" class="btn btn-sm btn-warning">Train Model</button>
+                <div class="mt-2" id="trainingProgress" style="display:none;">
+                    <div class="progress" style="height: 20px;">
+                        <div id="trainProgressBar" class="progress-bar progress-bar-striped progress-bar-animated"
+                            role="progressbar" style="width: 0%;">0%</div>
+                    </div>
+                    <small id="trainLossLabel" class="text-muted">Loss: —</small>
+                </div>
+                <div id="trainDoneMsg" class="alert alert-success mt-2 py-1" style="display:none;">
+                    Training complete! Draw something and click <em>Predict</em>.
+                </div>
+                <div id="trainErrorMsg" class="alert alert-danger mt-2 py-1" style="display:none;"></div>
+            </div>
+        </div>
+
+        <!-- Resulting Drawing -->
+        <div class="card mt-3">
+            <div class="card-header">
+                <strong>Last Added Drawing</strong>
             </div>
         </div>
         <div class="card-body">
@@ -45,114 +80,146 @@
                 <img id="resultImage"></img>
             </div>
             <div class="col-12">
-                <input id="resultLabel" type="text" readonly hidden></input>
+                <input id="resultLabel" type="text" readonly hidden>
             </div>
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
-        <!-- <script src="canvastobmp.js"></script> -->
+        <script src="model.js"></script>
         <script src="drawer.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/webgpu-torch@latest/torch.js"></script>
         <script>
             initDraw();
 
             function downloadImage() {
-                const image = document.getElementById("scratchPad");
                 const imageLabel = document.getElementById("imageLabel");
                 const a = document.createElement("a");
                 a.href = getImage();
-
-                if (imageLabel.value !== "")
-                {
-                    a.download = imageLabel.value + ".png";
-                }
-                else
-                {
-                    a.download = "DoddleAI.png";
-                }
+                a.download = (imageLabel.value !== "") ? imageLabel.value + ".png" : "DoodleAI.png";
                 a.click();
             }
 
+            function addToTrainingSet() {
+                const canvas = document.getElementById('scratchPad');
+                const imageLabel = document.getElementById("imageLabel");
+                const resultImage = document.getElementById("resultImage");
+                const resultLabel = document.getElementById("resultLabel");
+                const addFeedback = document.getElementById("addFeedback");
+                const addFeedbackMsg = document.getElementById("addFeedbackMsg");
+
+                const label = imageLabel.value.trim();
+                if (!label) {
+                    addFeedbackMsg.textContent = "Please enter a label before adding to the training set.";
+                    addFeedbackMsg.className = "alert alert-warning py-1";
+                    addFeedback.style.display = "block";
+                    return;
+                }
+
+                // Show the resulting drawing
+                resultImage.src = getImage();
+                resultLabel.value = label;
+                resultLabel.hidden = false;
+
+                // Add to classifier
+                doodleClassifier.addSample(canvas, label);
+                updateTrainingStats();
+
+                addFeedbackMsg.textContent = `Added "${label}" to training set. Total: ${doodleClassifier.trainingData.length} sample(s).`;
+                addFeedbackMsg.className = "alert alert-success py-1";
+                addFeedback.style.display = "block";
+
+                // Reset prediction display
+                document.getElementById("predictionResult").style.display = "none";
+            }
+
+            function updateTrainingStats() {
+                const stats = doodleClassifier.getStats();
+                const statsDiv = document.getElementById("trainingStats");
+                const keys = Object.keys(stats);
+                if (keys.length === 0) {
+                    statsDiv.textContent = "No samples collected yet.";
+                    return;
+                }
+                statsDiv.innerHTML = keys.map(k =>
+                    `<span class="badge bg-secondary me-1">${k}: ${stats[k]}</span>`
+                ).join("");
+            }
+
+            async function trainModel() {
+                const trainBtn = document.getElementById("trainBtn");
+                const trainingProgress = document.getElementById("trainingProgress");
+                const trainProgressBar = document.getElementById("trainProgressBar");
+                const trainLossLabel = document.getElementById("trainLossLabel");
+                const trainDoneMsg = document.getElementById("trainDoneMsg");
+                const trainErrorMsg = document.getElementById("trainErrorMsg");
+
+                trainDoneMsg.style.display = "none";
+                trainErrorMsg.style.display = "none";
+                trainBtn.disabled = true;
+
+                try {
+                    trainingProgress.style.display = "block";
+
+                    await doodleClassifier.train((epoch, total, loss) => {
+                        const pct = Math.round((epoch / total) * 100);
+                        trainProgressBar.style.width = pct + "%";
+                        trainProgressBar.textContent = pct + "%";
+                        trainLossLabel.textContent = "Epoch " + epoch + "/" + total + "  Loss: " + loss.toFixed(4);
+                    });
+
+                    trainProgressBar.style.width = "100%";
+                    trainProgressBar.textContent = "100%";
+                    trainDoneMsg.style.display = "block";
+                } catch (err) {
+                    trainErrorMsg.textContent = err.message;
+                    trainErrorMsg.style.display = "block";
+                } finally {
+                    trainBtn.disabled = false;
+                    trainingProgress.style.display = "none";
+                }
+            }
+
+            function predictDrawing() {
+                const canvas = document.getElementById('scratchPad');
+                const predictionResult = document.getElementById("predictionResult");
+                const predLabel = document.getElementById("predLabel");
+                const predConfidence = document.getElementById("predConfidence");
+
+                const result = doodleClassifier.predict(canvas);
+                if (!result) {
+                    alert("Train the model first before predicting.");
+                    return;
+                }
+
+                predLabel.textContent = result.label;
+                predConfidence.textContent = result.confidence;
+                predictionResult.style.display = "block";
+            }
+
             function reshapeArray(noAlphaImage, WIDTH, HEIGHT, PIXEL) {
-                //const WIDTH = 224, HEIGHT = 224, PIXEL = 3;
                 var destImage = [];
-                
-                for (var w = 0; w < WIDTH; w++)
-                {
+                for (var w = 0; w < WIDTH; w++) {
                     destImage[w] = [];
-                    for (var h = 0; h < HEIGHT; h++)
-                    {
+                    for (var h = 0; h < HEIGHT; h++) {
                         destImage[w][h] = [];
-                        for (var p = 0; p < PIXEL; p++)
-                        {
+                        for (var p = 0; p < PIXEL; p++) {
                             const destIndex = (w * HEIGHT * PIXEL) + (h * PIXEL) + (p);
-                            destImage[w][h][p] = noAlphaImage[destIndex];      
+                            destImage[w][h][p] = noAlphaImage[destIndex];
                         }
                     }
-                }   
-                return destImage;     
+                }
+                return destImage;
             }
 
             function removeAlphaChannel(rgba) {
                 let noAlphaImage = [];
-
                 for (var i = 0; i < rgba.length; i++) {
-
                     if (i % 4 !== 3) {
                         noAlphaImage.push(rgba[i]);
                     }
                 }
                 return noAlphaImage;
             }
-
-            async function saveImage() {
-                const canvas = document.getElementById('scratchPad');
-                const imageLabel = document.getElementById("imageLabel");
-                const resultImage = document.getElementById("resultImage");
-                const resultLabel = document.getElementById("resultLabel");
-
-                const base64Image = getImage();
-                resultImage.src = base64Image;
-                resultLabel.value = imageLabel.value;
-                resultLabel.hidden = false;
-                
-                const idata = canvas.getContext("2d", { willReadFrequently: true })
-                    .getImageData(0, 0, canvas.width, canvas.height);
-                const rgba = new Uint8Array(idata.data.buffer); // 8-bit representation of canvas
-
-                //console.log(data8);
-
-                const noAlphaImage = removeAlphaChannel(rgba);
-
-                //console.log(noAlphaImage);
-                
-                const destImage = reshapeArray(noAlphaImage, 224, 224, 3);
-                        
-                //console.log(destImage);
-
-                if (!await torch.initWebGPUAsync()) {
-                    console.warn('WebGPU is not supported.');
-                }
-
-                const imgTorch = torch.tensor(destImage, 'uint8');
-                const abs = torch.abs(imgTorch);
-                console.log(abs);
-            }
-
-            // async function run() {
-            //     if (!await torch.initWebGPUAsync()) {
-            //         console.warn('WebGPU is not supported.');
-            //     }
-            //     const a = torch.tensor([[-1, 2, -3], [4, -5, 6]]);
-            //     const abs = torch.abs(a);
-            //     const abs2 = a.abs();
-
-            //     const b = torch.tensor([[7, -8, 9], [-10, 11, -12]]);
-            //     const sum = torch.add(a, b);
-            //     const sum2 = a.add(b);
-            //     console.log(sum2);
-            // }
-            // run();
         </script>
 </body>
 
