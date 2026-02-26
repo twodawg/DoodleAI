@@ -6,17 +6,23 @@
  *
  * Architecture:
  *   Input  : 784  (28×28 grayscale, normalised, inverted)
- *   Hidden1: 128  (ReLU)
- *   Hidden2: 64   (ReLU)
+ *   Hidden1: configurable (ReLU)
+ *   Hidden2: configurable (ReLU)
  *   Output : N    (one neuron per class)
  *
  * All weight matrices are stored as row-major Float32Arrays.
  */
 
-const IMG_SIZE     = 28;   // resize drawings to 28×28 before feeding the net
-const HIDDEN1_SIZE = 128;
-const HIDDEN2_SIZE = 64;
-const BATCH_SIZE   = 8;
+const IMG_SIZE   = 28;   // resize drawings to 28×28 before feeding the net
+const BATCH_SIZE = 8;
+
+/** Preset model architectures available for selection. */
+const MODEL_CONFIGS = {
+    tiny:   { hidden1:  64, hidden2:  32, label: 'Tiny (64→32)'     },
+    small:  { hidden1: 128, hidden2:  64, label: 'Small (128→64)'   },
+    medium: { hidden1: 256, hidden2: 128, label: 'Medium (256→128)' },
+    large:  { hidden1: 512, hidden2: 256, label: 'Large (512→256)'  },
+};
 
 class DoodleClassifier {
     constructor() {
@@ -27,6 +33,21 @@ class DoodleClassifier {
         this.W3 = null; this.b3 = null;
         this.modelTrained = false;
         this.gpuAvailable = false;
+        // Default to the 'small' architecture (original behaviour)
+        this.hidden1Size  = MODEL_CONFIGS.small.hidden1;
+        this.hidden2Size  = MODEL_CONFIGS.small.hidden2;
+    }
+
+    /**
+     * Switch the model architecture.  Must be called before train().
+     * @param {string} key – one of the keys in MODEL_CONFIGS (e.g. 'small')
+     */
+    setModelConfig(key) {
+        const cfg = MODEL_CONFIGS[key];
+        if (!cfg) throw new Error('Unknown model config: ' + key);
+        this.hidden1Size  = cfg.hidden1;
+        this.hidden2Size  = cfg.hidden2;
+        this.modelTrained = false;
     }
 
     /** Initialise WebGPU.  Must be called before train() / predict(). */
@@ -172,12 +193,14 @@ class DoodleClassifier {
     _initWeights() {
         const n         = this.labelNames.length;
         const inputSize = IMG_SIZE * IMG_SIZE;   // 784
+        const h1Size    = this.hidden1Size;
+        const h2Size    = this.hidden2Size;
 
-        this.W1 = this._randomMatrix(inputSize,    HIDDEN1_SIZE);  // [784 × 128]
-        this.b1 = new Float32Array(HIDDEN1_SIZE);
-        this.W2 = this._randomMatrix(HIDDEN1_SIZE, HIDDEN2_SIZE);  // [128 × 64]
-        this.b2 = new Float32Array(HIDDEN2_SIZE);
-        this.W3 = this._randomMatrix(HIDDEN2_SIZE, n);             // [64 × N]
+        this.W1 = this._randomMatrix(inputSize, h1Size);  // [784 × h1]
+        this.b1 = new Float32Array(h1Size);
+        this.W2 = this._randomMatrix(h1Size, h2Size);     // [h1 × h2]
+        this.b2 = new Float32Array(h2Size);
+        this.W3 = this._randomMatrix(h2Size, n);          // [h2 × N]
         this.b3 = new Float32Array(n);
     }
 
@@ -192,12 +215,14 @@ class DoodleClassifier {
     _forward(x, batchSize) {
         const n         = this.labelNames.length;
         const inputSize = IMG_SIZE * IMG_SIZE;   // 784
+        const h1Size    = this.hidden1Size;
+        const h2Size    = this.hidden2Size;
 
-        const h1Pre  = this._addBias(this._matmul(x,  this.W1, batchSize, inputSize,    HIDDEN1_SIZE), this.b1, batchSize, HIDDEN1_SIZE);
+        const h1Pre  = this._addBias(this._matmul(x,   this.W1, batchSize, inputSize, h1Size), this.b1, batchSize, h1Size);
         const h1     = this._relu(h1Pre);
-        const h2Pre  = this._addBias(this._matmul(h1, this.W2, batchSize, HIDDEN1_SIZE, HIDDEN2_SIZE), this.b2, batchSize, HIDDEN2_SIZE);
+        const h2Pre  = this._addBias(this._matmul(h1,  this.W2, batchSize, h1Size,    h2Size), this.b2, batchSize, h2Size);
         const h2     = this._relu(h2Pre);
-        const logits = this._addBias(this._matmul(h2, this.W3, batchSize, HIDDEN2_SIZE, n),            this.b3, batchSize, n);
+        const logits = this._addBias(this._matmul(h2,  this.W3, batchSize, h2Size,    n),      this.b3, batchSize, n);
 
         return { x, h1, h1Pre, h2, h2Pre, logits };
     }
@@ -237,8 +262,10 @@ class DoodleClassifier {
      * @param {number}       lr       – learning rate
      */
     _backward(fwd, targets, batchSize, lr) {
-        const n  = this.labelNames.length;
-        const bs = batchSize;
+        const n      = this.labelNames.length;
+        const bs     = batchSize;
+        const h1Size = this.hidden1Size;
+        const h2Size = this.hidden2Size;
         const { x, h1, h1Pre, h2, h2Pre, logits } = fwd;
 
         // dL/dlogits = 2 * (logits − targets) / (bs * n)
@@ -247,28 +274,28 @@ class DoodleClassifier {
         for (let i = 0; i < dOut.length; i++) dOut[i] = scale * (logits[i] - targets[i]);
 
         // ── Layer 3 ──────────────────────────────────────────────────────────
-        const dW3 = this._matmulTA(h2, dOut, bs, HIDDEN2_SIZE, n);           // [64, N]
+        const dW3 = this._matmulTA(h2, dOut, bs, h2Size, n);           // [h2, N]
         const db3 = this._sumCols(dOut, bs, n);
 
-        const dh2 = this._matmulTB(dOut, this.W3, bs, n, HIDDEN2_SIZE);      // [bs, 64]
+        const dh2 = this._matmulTB(dOut, this.W3, bs, n, h2Size);      // [bs, h2]
 
         // ReLU backward through h2
-        const dh2Pre = new Float32Array(bs * HIDDEN2_SIZE);
+        const dh2Pre = new Float32Array(bs * h2Size);
         for (let i = 0; i < dh2Pre.length; i++) dh2Pre[i] = h2Pre[i] > 0 ? dh2[i] : 0;
 
         // ── Layer 2 ──────────────────────────────────────────────────────────
-        const dW2 = this._matmulTA(h1, dh2Pre, bs, HIDDEN1_SIZE, HIDDEN2_SIZE); // [128, 64]
-        const db2 = this._sumCols(dh2Pre, bs, HIDDEN2_SIZE);
+        const dW2 = this._matmulTA(h1, dh2Pre, bs, h1Size, h2Size);    // [h1, h2]
+        const db2 = this._sumCols(dh2Pre, bs, h2Size);
 
-        const dh1 = this._matmulTB(dh2Pre, this.W2, bs, HIDDEN2_SIZE, HIDDEN1_SIZE); // [bs, 128]
+        const dh1 = this._matmulTB(dh2Pre, this.W2, bs, h2Size, h1Size); // [bs, h1]
 
         // ReLU backward through h1
-        const dh1Pre = new Float32Array(bs * HIDDEN1_SIZE);
+        const dh1Pre = new Float32Array(bs * h1Size);
         for (let i = 0; i < dh1Pre.length; i++) dh1Pre[i] = h1Pre[i] > 0 ? dh1[i] : 0;
 
         // ── Layer 1 ──────────────────────────────────────────────────────────
-        const dW1 = this._matmulTA(x, dh1Pre, bs, IMG_SIZE * IMG_SIZE, HIDDEN1_SIZE); // [784, 128]
-        const db1 = this._sumCols(dh1Pre, bs, HIDDEN1_SIZE);
+        const dW1 = this._matmulTA(x, dh1Pre, bs, IMG_SIZE * IMG_SIZE, h1Size); // [784, h1]
+        const db1 = this._sumCols(dh1Pre, bs, h1Size);
 
         // ── SGD update ────────────────────────────────────────────────────────
         for (let i = 0; i < this.W1.length; i++) this.W1[i] -= lr * dW1[i];
