@@ -3,157 +3,259 @@
 <head>
     <title>Doodle AI</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        #scratchPad { cursor: crosshair; display: block; }
+        .confidence-bar { transition: width 0.3s ease; }
+    </style>
 </head>
 
 <body>
-    <div class="container">
-        <h2>Doodle AI</h2>
-        <div id="toolbar">
-            <div class="card">
-                <div class="card-header">
-                    <strong>Design Space</strong>
-                </div>
-            </div>
-            <div class="card-body">
-                <div class="col-12">
-                    <p>Draw and label an image to be added to the training set</p>
+    <div class="container py-3">
+        <h2>🎨 Doodle AI <small class="text-muted fs-6">Powered by WebGPU</small></h2>
 
-                    <label for="stroke">Color</label>
-                    <input id="stroke" name='stroke' type="color">
-                    <label for="lineWidth">Line Width</label>
-                    <input id="lineWidth" name='lineWidth' type="number" value="2">
-                    <button type="button" id="clear" class="btn btn-sm btn-primary">Clear</button>
-                </div>
-                <div class="col-12">
-                    <canvas id="scratchPad"
-                        style="width: 224px; height: 224px; outline: gray 5px solid; margin: 5px"></canvas>
+        <!-- WebGPU status banner -->
+        <div id="gpuStatus" class="alert alert-secondary py-1 mb-3">Initialising WebGPU…</div>
+
+        <div class="row g-3">
+
+            <!-- ── Step 1: Draw & Label ───────────────────────────────── -->
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-header"><strong>Step 1 — Draw &amp; Label</strong></div>
+                    <div class="card-body">
+                        <!--
+                            The toolbar div (id="toolbar") and the stroke / lineWidth / clear
+                            elements must stay here so drawer.js continues to work unchanged.
+                        -->
+                        <div id="toolbar">
+                            <div class="mb-2 d-flex align-items-center gap-2 flex-wrap">
+                                <label for="stroke" class="mb-0">Color</label>
+                                <input id="stroke" name="stroke" type="color" value="#000000"
+                                    class="form-control form-control-color" style="width:38px;height:32px">
+                                <label for="lineWidth" class="mb-0">Width</label>
+                                <input id="lineWidth" name="lineWidth" type="number" value="5" min="1" max="20"
+                                    class="form-control form-control-sm" style="width:60px">
+                                <button type="button" id="clear"
+                                    class="btn btn-sm btn-outline-secondary">Clear</button>
+                            </div>
+
+                            <canvas id="scratchPad"
+                                style="width:224px;height:224px;outline:gray 5px solid;margin-bottom:8px">
+                            </canvas>
+
+                            <div class="input-group mt-2">
+                                <input id="imageLabel" type="text" class="form-control"
+                                    placeholder="Label (e.g. cat, dog, house)">
+                                <button type="button" class="btn btn-success"
+                                    onclick="addSample()">Add to Training Set</button>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-2"
+                                onclick="downloadImage()">Download PNG</button>
+                        </div>
                     </div>
-                <div class="col-12">
-                    <input id="imageLabel" type="text" placeholder="Label of drawing" style="margin: 5px"></input>
-                    <button type="button" onclick="saveImage();" class="btn btn-sm btn-primary">Process</button>
-                    <button type="button" onclick="downloadImage();" class="btn btn-sm btn-primary">Download</button>
                 </div>
             </div>
-        </div>
-        <div class="card">
-            <div class="card-header">
-                <strong>Resulting Drawing</strong>
+
+            <!-- ── Step 2: Train ─────────────────────────────────────── -->
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-header"><strong>Step 2 — Train Model</strong></div>
+                    <div class="card-body d-flex flex-column">
+                        <p id="sampleStats" class="text-muted mb-1">No training samples yet.</p>
+                        <div id="labelList" class="mb-3"></div>
+
+                        <div class="mb-2">
+                            <label class="form-label mb-0">
+                                Epochs: <span id="epochDisplay">100</span>
+                            </label>
+                            <input id="epochsInput" type="range" min="10" max="500" value="100"
+                                class="form-range"
+                                oninput="document.getElementById('epochDisplay').textContent = this.value">
+
+                            <label class="form-label mb-0 mt-1">
+                                Learning rate: <span id="lrDisplay">0.010</span>
+                            </label>
+                            <input id="lrInput" type="range" min="1" max="100" value="10"
+                                class="form-range"
+                                oninput="document.getElementById('lrDisplay').textContent =
+                                    (this.value / 1000).toFixed(3)">
+                        </div>
+
+                        <button type="button" id="trainBtn" class="btn btn-primary"
+                            onclick="trainModel()" disabled>Train Model</button>
+
+                        <div id="trainingProgress" class="mt-2" style="display:none">
+                            <div class="progress">
+                                <div id="progressBar"
+                                    class="progress-bar progress-bar-striped progress-bar-animated"
+                                    role="progressbar" style="width:0%">0%</div>
+                            </div>
+                            <small id="trainingStatus" class="text-muted"></small>
+                        </div>
+
+                        <button type="button" class="btn btn-sm btn-outline-danger mt-auto mt-3"
+                            onclick="clearData()">Clear All Data</button>
+                    </div>
+                </div>
             </div>
-        </div>
-        <div class="card-body">
-            <div class="col-12">
-                <img id="resultImage"></img>
+
+            <!-- ── Step 3: Classify ──────────────────────────────────── -->
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-header"><strong>Step 3 — Classify</strong></div>
+                    <div class="card-body d-flex flex-column">
+                        <p class="text-muted small">
+                            Draw something on the canvas, then click Classify to run inference.
+                        </p>
+                        <button type="button" id="classifyBtn" class="btn btn-warning"
+                            onclick="classifyDrawing()" disabled>Classify Drawing</button>
+                        <div id="classifyResults" class="mt-3"></div>
+                    </div>
+                </div>
             </div>
-            <div class="col-12">
-                <input id="resultLabel" type="text" readonly hidden></input>
-            </div>
-        </div>
 
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
-        <!-- <script src="canvastobmp.js"></script> -->
-        <script src="drawer.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/webgpu-torch@latest/torch.js"></script>
-        <script>
-            initDraw();
+        </div><!-- /row -->
+    </div><!-- /container -->
 
-            function downloadImage() {
-                const image = document.getElementById("scratchPad");
-                const imageLabel = document.getElementById("imageLabel");
-                const a = document.createElement("a");
-                a.href = getImage();
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.1/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/webgpu-torch@latest/torch.js"></script>
+    <script src="drawer.js"></script>
+    <script src="model.js"></script>
+    <script>
+        // ── Initialise drawing canvas ──────────────────────────────────
+        initDraw();
 
-                if (imageLabel.value !== "")
-                {
-                    a.download = imageLabel.value + ".png";
-                }
-                else
-                {
-                    a.download = "DoddleAI.png";
-                }
-                a.click();
+        // ── Initialise WebGPU ──────────────────────────────────────────
+        (async () => {
+            const statusEl = document.getElementById('gpuStatus');
+            const available = await classifier.init();
+            if (available) {
+                statusEl.className = 'alert alert-success py-1 mb-3';
+                statusEl.textContent = '✓ WebGPU is available';
+            } else {
+                statusEl.className = 'alert alert-warning py-1 mb-3';
+                statusEl.textContent = '⚠ WebGPU not available — training and inference will use the CPU';
             }
+        })();
 
-            function reshapeArray(noAlphaImage, WIDTH, HEIGHT, PIXEL) {
-                //const WIDTH = 224, HEIGHT = 224, PIXEL = 3;
-                var destImage = [];
-                
-                for (var w = 0; w < WIDTH; w++)
-                {
-                    destImage[w] = [];
-                    for (var h = 0; h < HEIGHT; h++)
-                    {
-                        destImage[w][h] = [];
-                        for (var p = 0; p < PIXEL; p++)
-                        {
-                            const destIndex = (w * HEIGHT * PIXEL) + (h * PIXEL) + (p);
-                            destImage[w][h][p] = noAlphaImage[destIndex];      
-                        }
-                    }
-                }   
-                return destImage;     
+        // ── Step 1 helpers ─────────────────────────────────────────────
+
+        function addSample() {
+            const canvas = document.getElementById('scratchPad');
+            const label  = document.getElementById('imageLabel').value.trim();
+            if (!label) { alert('Please enter a label for your drawing.'); return; }
+
+            const result = classifier.addSample(canvas, label);
+            _updateSampleDisplay(result);
+
+            // Clear the canvas so the user can draw the next sample
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Enable Train button once we have ≥2 different labels
+            document.getElementById('trainBtn').disabled = result.labels.length < 2;
+        }
+
+        function downloadImage() {
+            const canvas = document.getElementById('scratchPad');
+            const rawLabel = document.getElementById('imageLabel').value.trim() || 'doodle';
+            // Sanitise the label so it is safe to use as a filename
+            const safeLabel = rawLabel.replace(/[/\\:*?"<>|]/g, '_');
+            const a = document.createElement('a');
+            a.href     = canvas.toDataURL('image/png');
+            a.download = safeLabel + '.png';
+            a.click();
+        }
+
+        function _updateSampleDisplay(result) {
+            document.getElementById('sampleStats').textContent =
+                result.totalSamples + ' sample(s) · ' + result.labels.length + ' label(s)';
+            document.getElementById('labelList').innerHTML =
+                result.counts.map(c =>
+                    '<span class="badge bg-primary me-1 mb-1">' + c.label + ': ' + c.count + '</span>'
+                ).join('');
+        }
+
+        // ── Step 2 helpers ─────────────────────────────────────────────
+
+        async function trainModel() {
+            const trainBtn    = document.getElementById('trainBtn');
+            const classifyBtn = document.getElementById('classifyBtn');
+            const progressDiv = document.getElementById('trainingProgress');
+            const progressBar = document.getElementById('progressBar');
+            const statusEl    = document.getElementById('trainingStatus');
+
+            const epochs = parseInt(document.getElementById('epochsInput').value, 10);
+            const lr     = parseInt(document.getElementById('lrInput').value, 10) / 1000;
+
+            trainBtn.disabled    = true;
+            classifyBtn.disabled = true;
+            progressDiv.style.display = 'block';
+            progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated';
+            statusEl.textContent = 'Starting training…';
+
+            try {
+                await classifier.train(epochs, lr, (epoch, total, loss) => {
+                    const pct = Math.round((epoch / total) * 100);
+                    progressBar.style.width   = pct + '%';
+                    progressBar.textContent   = pct + '%';
+                    statusEl.textContent =
+                        'Epoch ' + epoch + '/' + total + ' · Loss: ' + loss.toFixed(4);
+                });
+
+                progressBar.className   = 'progress-bar bg-success';
+                progressBar.style.width = '100%';
+                progressBar.textContent = '100%';
+                statusEl.textContent    = '✓ Training complete!';
+                classifyBtn.disabled    = false;
+            } catch (e) {
+                statusEl.textContent  = '✗ ' + e.message;
+                progressBar.className = 'progress-bar bg-danger';
+            } finally {
+                trainBtn.disabled = false;
             }
+        }
 
-            function removeAlphaChannel(rgba) {
-                let noAlphaImage = [];
+        function clearData() {
+            if (!confirm('Clear all training data and reset the model?')) return;
+            classifier.clearData();
+            document.getElementById('sampleStats').textContent    = 'No training samples yet.';
+            document.getElementById('labelList').innerHTML         = '';
+            document.getElementById('trainBtn').disabled          = true;
+            document.getElementById('classifyBtn').disabled       = true;
+            document.getElementById('classifyResults').innerHTML  = '';
+            document.getElementById('trainingProgress').style.display = 'none';
+        }
 
-                for (var i = 0; i < rgba.length; i++) {
+        // ── Step 3 helpers ─────────────────────────────────────────────
 
-                    if (i % 4 !== 3) {
-                        noAlphaImage.push(rgba[i]);
-                    }
-                }
-                return noAlphaImage;
+        async function classifyDrawing() {
+            const canvas    = document.getElementById('scratchPad');
+            const resultsEl = document.getElementById('classifyResults');
+            try {
+                const predictions = await classifier.predict(canvas);
+                resultsEl.innerHTML = predictions.map((p, i) => {
+                    const pct    = (p.confidence * 100).toFixed(1);
+                    const isBest = i === 0;
+                    return '<div class="mb-2">' +
+                        '<div class="d-flex justify-content-between">' +
+                            '<span class="' + (isBest ? 'fw-bold' : '') + '">' + p.label + '</span>' +
+                            '<span>' + pct + '%</span>' +
+                        '</div>' +
+                        '<div class="progress" style="height:8px">' +
+                            '<div class="progress-bar confidence-bar ' +
+                                (isBest ? 'bg-success' : 'bg-secondary') + '"' +
+                                ' style="width:' + pct + '%"></div>' +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+            } catch (e) {
+                resultsEl.innerHTML =
+                    '<div class="alert alert-danger py-1 small">' + e.message + '</div>';
             }
-
-            async function saveImage() {
-                const canvas = document.getElementById('scratchPad');
-                const imageLabel = document.getElementById("imageLabel");
-                const resultImage = document.getElementById("resultImage");
-                const resultLabel = document.getElementById("resultLabel");
-
-                const base64Image = getImage();
-                resultImage.src = base64Image;
-                resultLabel.value = imageLabel.value;
-                resultLabel.hidden = false;
-                
-                const idata = canvas.getContext("2d", { willReadFrequently: true })
-                    .getImageData(0, 0, canvas.width, canvas.height);
-                const rgba = new Uint8Array(idata.data.buffer); // 8-bit representation of canvas
-
-                //console.log(data8);
-
-                const noAlphaImage = removeAlphaChannel(rgba);
-
-                //console.log(noAlphaImage);
-                
-                const destImage = reshapeArray(noAlphaImage, 224, 224, 3);
-                        
-                //console.log(destImage);
-
-                if (!await torch.initWebGPUAsync()) {
-                    console.warn('WebGPU is not supported.');
-                }
-
-                const imgTorch = torch.tensor(destImage, 'uint8');
-                const abs = torch.abs(imgTorch);
-                console.log(abs);
-            }
-
-            // async function run() {
-            //     if (!await torch.initWebGPUAsync()) {
-            //         console.warn('WebGPU is not supported.');
-            //     }
-            //     const a = torch.tensor([[-1, 2, -3], [4, -5, 6]]);
-            //     const abs = torch.abs(a);
-            //     const abs2 = a.abs();
-
-            //     const b = torch.tensor([[7, -8, 9], [-10, 11, -12]]);
-            //     const sum = torch.add(a, b);
-            //     const sum2 = a.add(b);
-            //     console.log(sum2);
-            // }
-            // run();
-        </script>
+        }
+    </script>
 </body>
 
 </html>
