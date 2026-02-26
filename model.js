@@ -112,27 +112,35 @@ class DoodleClassifier {
         return t;
     }
 
-    /** Allocate WebGPU tensors for all learnable parameters. */
+    /** Allocate WebGPU tensors for all learnable parameters.
+     *
+     * Weights are stored as [outFeatures, inFeatures] so that torch.linear,
+     * which computes  y = x @ W^T + b  and supports autograd, can be used
+     * directly.  (torch.mm does not support gradient computation in
+     * webgpu-torch v0.3.5.)
+     */
     _initWeights() {
         const n         = this.labelNames.length;
         const inputSize = IMG_SIZE * IMG_SIZE;   // 784
 
-        this.W1 = this._param(this._randomMatrix(inputSize,    HIDDEN1_SIZE));
-        this.b1 = this._param([new Array(HIDDEN1_SIZE).fill(0.0)]);
-        this.W2 = this._param(this._randomMatrix(HIDDEN1_SIZE, HIDDEN2_SIZE));
-        this.b2 = this._param([new Array(HIDDEN2_SIZE).fill(0.0)]);
-        this.W3 = this._param(this._randomMatrix(HIDDEN2_SIZE, n));
-        this.b3 = this._param([new Array(n).fill(0.0)]);
+        this.W1 = this._param(this._randomMatrix(HIDDEN1_SIZE, inputSize));    // [128, 784]
+        this.b1 = this._param(new Array(HIDDEN1_SIZE).fill(0.0));              // [128]
+        this.W2 = this._param(this._randomMatrix(HIDDEN2_SIZE, HIDDEN1_SIZE)); // [64, 128]
+        this.b2 = this._param(new Array(HIDDEN2_SIZE).fill(0.0));              // [64]
+        this.W3 = this._param(this._randomMatrix(n, HIDDEN2_SIZE));            // [n, 64]
+        this.b3 = this._param(new Array(n).fill(0.0));                         // [n]
     }
 
     /**
      * Forward pass through the 3-layer MLP.
      * x shape: [batch, 784]  →  returns logits [batch, numClasses]
+     *
+     * torch.linear(x, W, b) computes x @ W^T + b and supports autograd.
      */
     _forward(x) {
-        const h1 = torch.relu(torch.add(torch.mm(x,  this.W1), this.b1));  // [batch, 128]
-        const h2 = torch.relu(torch.add(torch.mm(h1, this.W2), this.b2));  // [batch,  64]
-        return torch.add(torch.mm(h2, this.W3), this.b3);                  // [batch,   N]
+        const h1 = torch.relu(torch.linear(x,  this.W1, this.b1));  // [batch, 128]
+        const h2 = torch.relu(torch.linear(h1, this.W2, this.b2));  // [batch,  64]
+        return torch.linear(h2, this.W3, this.b3);                  // [batch,   N]
     }
 
     /**
