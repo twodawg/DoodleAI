@@ -360,6 +360,60 @@ class DoodleClassifier {
             .sort((a, b) => b.confidence - a.confidence);
     }
 
+    /**
+     * Export training data as a plain JSON-serialisable object.
+     * The returned value can be passed to importTrainingData() to restore state.
+     */
+    exportTrainingData() {
+        return {
+            labelNames: [...this.labelNames],
+            trainingData: this.trainingData.map(d => ({
+                pixels: Array.from(d.pixels),
+                labelIdx: d.labelIdx
+            }))
+        };
+    }
+
+    /**
+     * Import training data from a previously exported object.
+     * Returns the same summary object as addSample() for convenience.
+     *
+     * @param {object} data – { labelNames: string[], trainingData: { pixels: number[], labelIdx: number }[] }
+     */
+    importTrainingData(data) {
+        if (!data || !Array.isArray(data.labelNames) || !Array.isArray(data.trainingData)) {
+            throw new Error('Invalid training data format');
+        }
+        const numLabels = data.labelNames.length;
+        const pixelLen  = IMG_SIZE * IMG_SIZE;  // 784
+
+        this.labelNames   = [...data.labelNames];
+        this.trainingData = data.trainingData.map((d, i) => {
+            if (!Array.isArray(d.pixels) || d.pixels.length !== pixelLen) {
+                throw new Error('Sample ' + i + ': pixels must be an array of ' + pixelLen + ' numbers');
+            }
+            if (!d.pixels.every(v => typeof v === 'number' && v >= 0 && v <= 1)) {
+                throw new Error('Sample ' + i + ': pixel values must be numbers in the range [0, 1]');
+            }
+            if (!Number.isInteger(d.labelIdx) || d.labelIdx < 0 || d.labelIdx >= numLabels) {
+                throw new Error('Sample ' + i + ': labelIdx ' + d.labelIdx + ' is out of bounds');
+            }
+            return { pixels: d.pixels, labelIdx: d.labelIdx };
+        });
+        this.modelTrained = false;
+
+        return {
+            totalSamples: this.trainingData.length,
+            labels: [...this.labelNames],
+            counts: this.labelNames.map(l => ({
+                label: l,
+                count: this.trainingData.filter(
+                    d => d.labelIdx === this.labelNames.indexOf(l)
+                ).length
+            }))
+        };
+    }
+
     /** Remove all stored samples and reset model weights. */
     clearData() {
         this.trainingData = [];
