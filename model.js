@@ -1,12 +1,16 @@
 /**
  * DoodleAI - Neural network classifier for doodle recognition.
- * Uses WebGPU via webgpu-torch for GPU-accelerated training and inference.
+ * Implements a 3-layer MLP trained with mini-batch SGD in plain JavaScript.
+ * WebGPU (via webgpu-torch) is checked for availability but computation runs
+ * on the CPU so that training works across all browsers.
  *
- * Architecture: 3-layer MLP
+ * Architecture:
  *   Input  : 784  (28×28 grayscale, normalised, inverted)
  *   Hidden1: 128  (ReLU)
  *   Hidden2: 64   (ReLU)
  *   Output : N    (one neuron per class)
+ *
+ * All weight matrices are stored as row-major Float32Arrays.
  */
 
 const IMG_SIZE     = 28;   // resize drawings to 28×28 before feeding the net
@@ -95,113 +99,188 @@ class DoodleClassifier {
 
     _randomMatrix(rows, cols) {
         const scale = Math.sqrt(2.0 / rows);
-        const arr = [];
-        for (let i = 0; i < rows; i++) {
-            arr[i] = [];
-            for (let j = 0; j < cols; j++) {
-                arr[i][j] = (Math.random() * 2 - 1) * scale;
-            }
+        const arr   = new Float32Array(rows * cols);
+        for (let i = 0; i < arr.length; i++) {
+            arr[i] = (Math.random() * 2 - 1) * scale;
         }
         return arr;
     }
 
-    /** Create a float32 tensor whose gradients will be tracked. */
-    _param(data) {
-        const t = torch.tensor(data);
-        t.requiresGrad = true;
-        return t;
+    // ── Pure-JS linear algebra helpers ──────────────────────────────────────
+
+    /** A @ B  —  A: [m, k], B: [k, n] → C: [m, n] */
+    _matmul(A, B, m, k, n) {
+        const C = new Float32Array(m * n);
+        for (let i = 0; i < m; i++) {
+            const rowA = i * k;
+            const rowC = i * n;
+            for (let p = 0; p < k; p++) {
+                const a    = A[rowA + p];
+                const colB = p * n;
+                for (let j = 0; j < n; j++) C[rowC + j] += a * B[colB + j];
+            }
+        }
+        return C;
     }
 
-    /** Allocate WebGPU tensors for all learnable parameters.
-     *
-     * Weights are stored as [outFeatures, inFeatures] so that torch.linear,
-     * which computes  y = x @ W^T + b  and supports autograd, can be used
-     * directly.  (torch.mm does not support gradient computation in
-     * webgpu-torch v0.3.5.)
-     */
+    /** A^T @ B  —  A: [m, k], B: [m, n] → C: [k, n] */
+    _matmulTA(A, B, m, k, n) {
+        const C = new Float32Array(k * n);
+        for (let i = 0; i < m; i++) {
+            for (let p = 0; p < k; p++) {
+                const a    = A[i * k + p];
+                const rowC = p * n;
+                for (let j = 0; j < n; j++) C[rowC + j] += a * B[i * n + j];
+            }
+        }
+        return C;
+    }
+
+    /** A @ B^T  —  A: [m, k], B: [n, k] → C: [m, n] */
+    _matmulTB(A, B, m, k, n) {
+        const C = new Float32Array(m * n);
+        for (let i = 0; i < m; i++) {
+            for (let j = 0; j < n; j++) {
+                let sum = 0;
+                for (let p = 0; p < k; p++) sum += A[i * k + p] * B[j * k + p];
+                C[i * n + j] = sum;
+            }
+        }
+        return C;
+    }
+
+    /** Y[i, j] = X[i, j] + b[j] */
+    _addBias(X, b, rows, cols) {
+        const Y = new Float32Array(rows * cols);
+        for (let i = 0; i < rows; i++) {
+            const off = i * cols;
+            for (let j = 0; j < cols; j++) Y[off + j] = X[off + j] + b[j];
+        }
+        return Y;
+    }
+
+    /** Element-wise ReLU, returns a new Float32Array */
+    _relu(X) {
+        const Y = new Float32Array(X.length);
+        for (let i = 0; i < X.length; i++) Y[i] = X[i] > 0 ? X[i] : 0;
+        return Y;
+    }
+
+    // ── Weight initialisation ────────────────────────────────────────────────
+
+    /** Allocate He-initialised weight matrices and zero bias vectors. */
     _initWeights() {
         const n         = this.labelNames.length;
         const inputSize = IMG_SIZE * IMG_SIZE;   // 784
 
-        this.W1 = this._param(this._randomMatrix(HIDDEN1_SIZE, inputSize));    // [128, 784]
-        this.b1 = this._param(new Array(HIDDEN1_SIZE).fill(0.0));              // [128]
-        this.W2 = this._param(this._randomMatrix(HIDDEN2_SIZE, HIDDEN1_SIZE)); // [64, 128]
-        this.b2 = this._param(new Array(HIDDEN2_SIZE).fill(0.0));              // [64]
-        this.W3 = this._param(this._randomMatrix(n, HIDDEN2_SIZE));            // [n, 64]
-        this.b3 = this._param(new Array(n).fill(0.0));                         // [n]
+        this.W1 = this._randomMatrix(inputSize,    HIDDEN1_SIZE);  // [784 × 128]
+        this.b1 = new Float32Array(HIDDEN1_SIZE);
+        this.W2 = this._randomMatrix(HIDDEN1_SIZE, HIDDEN2_SIZE);  // [128 × 64]
+        this.b2 = new Float32Array(HIDDEN2_SIZE);
+        this.W3 = this._randomMatrix(HIDDEN2_SIZE, n);             // [64 × N]
+        this.b3 = new Float32Array(n);
     }
+
+    // ── Forward pass ────────────────────────────────────────────────────────
 
     /**
      * Forward pass through the 3-layer MLP.
-     * x shape: [batch, 784]  →  returns logits [batch, numClasses]
-     *
-     * torch.linear(x, W, b) computes x @ W^T + b and supports autograd.
+     * x: Float32Array of length batchSize × 784
+     * Returns an object containing all layer outputs and pre-activations
+     * required for the backward pass.
      */
-    _forward(x) {
-        const h1 = torch.relu(torch.linear(x,  this.W1, this.b1));  // [batch, 128]
-        const h2 = torch.relu(torch.linear(h1, this.W2, this.b2));  // [batch,  64]
-        return torch.linear(h2, this.W3, this.b3);                  // [batch,   N]
-    }
+    _forward(x, batchSize) {
+        const n         = this.labelNames.length;
+        const inputSize = IMG_SIZE * IMG_SIZE;   // 784
 
-    /**
-     * Zero out the accumulated gradients on all learnable parameters.
-     * (torch.optim is not in the public webgpu-torch API so we manage
-     * gradients manually.)
-     */
-    _zeroGrads() {
-        for (const p of [this.W1, this.b1, this.W2, this.b2, this.W3, this.b3]) {
-            if (p) p.grad = null;
-        }
-    }
+        const h1Pre  = this._addBias(this._matmul(x,  this.W1, batchSize, inputSize,    HIDDEN1_SIZE), this.b1, batchSize, HIDDEN1_SIZE);
+        const h1     = this._relu(h1Pre);
+        const h2Pre  = this._addBias(this._matmul(h1, this.W2, batchSize, HIDDEN1_SIZE, HIDDEN2_SIZE), this.b2, batchSize, HIDDEN2_SIZE);
+        const h2     = this._relu(h2Pre);
+        const logits = this._addBias(this._matmul(h2, this.W3, batchSize, HIDDEN2_SIZE, n),            this.b3, batchSize, n);
 
-    /**
-     * Manual SGD step: p ← p − lr * p.grad
-     * Detaches each updated tensor so the next forward pass starts a fresh graph.
-     */
-    _sgdStep(lr) {
-        const update = (p) => {
-            if (!p || !p.grad) return p;
-            const newVal = torch.sub(p, torch.mul(p.grad, lr));
-            const leaf   = newVal.detach();   // create a new leaf tensor
-            leaf.requiresGrad = true;
-            return leaf;
-        };
-        this.W1 = update(this.W1);
-        this.b1 = update(this.b1);
-        this.W2 = update(this.W2);
-        this.b2 = update(this.b2);
-        this.W3 = update(this.W3);
-        this.b3 = update(this.b3);
+        return { x, h1, h1Pre, h2, h2Pre, logits };
     }
 
     /**
      * Mean-squared-error loss between raw logits and one-hot targets.
+     * Returns a plain number (scalar) rather than a tensor.
      *
-     * NOTE: Cross-entropy is the theoretically preferred loss for multi-class
-     * classification, but webgpu-torch v0.3.5 does not export
-     * `torch.nn.functional.crossEntropyLoss` (it exists in source but is not
-     * in the public bundle API).  MSE with one-hot targets is used here as a
-     * fully supported alternative — it still minimises correctly and backprops
-     * through the same graph.
-     *
-     * @param {Tensor} logits – [batchSize, numClasses]
-     * @param {Array}  batch  – array of { pixels, labelIdx }
-     * @returns {Tensor} scalar loss
+     * @param {Float32Array} logits  – [batchSize × numClasses]
+     * @param {Float32Array} targets – one-hot [batchSize × numClasses]
+     * @returns {number} scalar MSE loss
      */
-    _computeLoss(logits, batch) {
-        const numClasses = this.labelNames.length;
-        const oneHotData = batch.map(d => {
-            const row = new Array(numClasses).fill(0.0);
-            row[d.labelIdx] = 1.0;
-            return row;
-        });
-        const targets = torch.tensor(oneHotData);              // [batch, numClasses]
-        const diff    = torch.sub(logits, targets);            // [batch, numClasses]
-        return torch.mean(torch.mul(diff, diff));              // scalar
+    _computeLoss(logits, targets) {
+        let sum = 0;
+        for (let i = 0; i < logits.length; i++) {
+            const d = logits[i] - targets[i];
+            sum += d * d;
+        }
+        return sum / logits.length;
+    }
+
+    // ── Backward pass + SGD update ───────────────────────────────────────────
+
+    /** Sum columns of a [rows × cols] matrix, returning a [cols] bias-gradient vector. */
+    _sumCols(M, rows, cols) {
+        const out = new Float32Array(cols);
+        for (let j = 0; j < cols; j++) for (let i = 0; i < rows; i++) out[j] += M[i * cols + j];
+        return out;
     }
 
     /**
-     * Train the model using GPU-accelerated mini-batch SGD.
+     * Backpropagate MSE loss and apply one SGD step to all weight matrices.
+     *
+     * @param {object}       fwd      – result of _forward()
+     * @param {Float32Array} targets  – one-hot labels [batchSize × numClasses]
+     * @param {number}       batchSize
+     * @param {number}       lr       – learning rate
+     */
+    _backward(fwd, targets, batchSize, lr) {
+        const n  = this.labelNames.length;
+        const bs = batchSize;
+        const { x, h1, h1Pre, h2, h2Pre, logits } = fwd;
+
+        // dL/dlogits = 2 * (logits − targets) / (bs * n)
+        const scale = 2.0 / (bs * n);
+        const dOut  = new Float32Array(bs * n);
+        for (let i = 0; i < dOut.length; i++) dOut[i] = scale * (logits[i] - targets[i]);
+
+        // ── Layer 3 ──────────────────────────────────────────────────────────
+        const dW3 = this._matmulTA(h2, dOut, bs, HIDDEN2_SIZE, n);           // [64, N]
+        const db3 = this._sumCols(dOut, bs, n);
+
+        const dh2 = this._matmulTB(dOut, this.W3, bs, n, HIDDEN2_SIZE);      // [bs, 64]
+
+        // ReLU backward through h2
+        const dh2Pre = new Float32Array(bs * HIDDEN2_SIZE);
+        for (let i = 0; i < dh2Pre.length; i++) dh2Pre[i] = h2Pre[i] > 0 ? dh2[i] : 0;
+
+        // ── Layer 2 ──────────────────────────────────────────────────────────
+        const dW2 = this._matmulTA(h1, dh2Pre, bs, HIDDEN1_SIZE, HIDDEN2_SIZE); // [128, 64]
+        const db2 = this._sumCols(dh2Pre, bs, HIDDEN2_SIZE);
+
+        const dh1 = this._matmulTB(dh2Pre, this.W2, bs, HIDDEN2_SIZE, HIDDEN1_SIZE); // [bs, 128]
+
+        // ReLU backward through h1
+        const dh1Pre = new Float32Array(bs * HIDDEN1_SIZE);
+        for (let i = 0; i < dh1Pre.length; i++) dh1Pre[i] = h1Pre[i] > 0 ? dh1[i] : 0;
+
+        // ── Layer 1 ──────────────────────────────────────────────────────────
+        const dW1 = this._matmulTA(x, dh1Pre, bs, IMG_SIZE * IMG_SIZE, HIDDEN1_SIZE); // [784, 128]
+        const db1 = this._sumCols(dh1Pre, bs, HIDDEN1_SIZE);
+
+        // ── SGD update ────────────────────────────────────────────────────────
+        for (let i = 0; i < this.W1.length; i++) this.W1[i] -= lr * dW1[i];
+        for (let i = 0; i < this.b1.length; i++) this.b1[i] -= lr * db1[i];
+        for (let i = 0; i < this.W2.length; i++) this.W2[i] -= lr * dW2[i];
+        for (let i = 0; i < this.b2.length; i++) this.b2[i] -= lr * db2[i];
+        for (let i = 0; i < this.W3.length; i++) this.W3[i] -= lr * dW3[i];
+        for (let i = 0; i < this.b3.length; i++) this.b3[i] -= lr * db3[i];
+    }
+
+    /**
+     * Train the model using mini-batch SGD.
      *
      * @param {number}   epochs     – number of full passes over training data
      * @param {number}   lr         – SGD learning rate
@@ -216,6 +295,7 @@ class DoodleClassifier {
         }
 
         this._initWeights();
+        const n = this.labelNames.length;
 
         for (let epoch = 0; epoch < epochs; epoch++) {
             // Shuffle training data before each epoch using Fisher-Yates
@@ -225,24 +305,20 @@ class DoodleClassifier {
             const batchSize  = Math.min(BATCH_SIZE, shuffled.length);
 
             for (let i = 0; i < shuffled.length; i += batchSize) {
-                const batch  = shuffled.slice(i, i + batchSize);
-                const xBatch = torch.tensor(batch.map(d => d.pixels));
+                const batch = shuffled.slice(i, i + batchSize);
+                const bs    = batch.length;
 
-                this._zeroGrads();
-                const logits = this._forward(xBatch);
-                const loss   = this._computeLoss(logits, batch);
-                loss.backward();
-                this._sgdStep(lr);
-
-                // toArrayAsync() is the correct API (tensor.item() is not exported)
-                const lossVal = await loss.toArrayAsync();
-                if (typeof lossVal === 'number') {
-                    totalLoss += lossVal;
-                } else if (Array.isArray(lossVal) && lossVal.length > 0) {
-                    totalLoss += lossVal[0];
-                } else {
-                    console.warn('Unexpected lossVal format from toArrayAsync():', lossVal);
+                // Build flat input and one-hot target arrays for this mini-batch
+                const x       = new Float32Array(bs * IMG_SIZE * IMG_SIZE);
+                const targets = new Float32Array(bs * n);
+                for (let b = 0; b < bs; b++) {
+                    x.set(batch[b].pixels, b * IMG_SIZE * IMG_SIZE);
+                    targets[b * n + batch[b].labelIdx] = 1.0;
                 }
+
+                const fwd = this._forward(x, bs);
+                totalLoss += this._computeLoss(fwd.logits, targets);
+                this._backward(fwd, targets, bs, lr);
                 batchCount++;
             }
 
@@ -265,22 +341,22 @@ class DoodleClassifier {
             throw new Error('Model not trained yet. Add samples and click Train Model.');
         }
         const pixels = this.preprocessCanvas(canvas);
-        const x      = torch.tensor([pixels]);
-        const logits = this._forward(x);
+        const x      = new Float32Array(pixels);
+        const { logits } = this._forward(x, 1);
 
-        // Manual softmax: exp(logits) / sum(exp(logits))
-        // torch.softmax is not a standalone export in webgpu-torch v0.3.5
-        const expLogits = torch.exp(logits);
-        // toArrayAsync() on a [1, numClasses] tensor returns [[v0, v1, ...]]
-        const expData   = await expLogits.toArrayAsync();
-        const row       = Array.isArray(expData[0]) ? expData[0] : expData;
-        if (!Array.isArray(row) || row.length !== this.labelNames.length) {
-            throw new Error('Unexpected inference output shape from model');
+        // Numerically stable softmax: shift by max before exp to avoid overflow
+        let maxLogit = logits[0];
+        for (let i = 1; i < logits.length; i++) if (logits[i] > maxLogit) maxLogit = logits[i];
+
+        const exps  = new Float32Array(logits.length);
+        let   total = 0;
+        for (let i = 0; i < logits.length; i++) {
+            exps[i] = Math.exp(logits[i] - maxLogit);
+            total  += exps[i];
         }
-        const total = row.reduce((s, v) => s + v, 0);
 
         return this.labelNames
-            .map((label, i) => ({ label, confidence: row[i] / total }))
+            .map((label, i) => ({ label, confidence: exps[i] / total }))
             .sort((a, b) => b.confidence - a.confidence);
     }
 

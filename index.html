@@ -131,10 +131,10 @@
             const available = await classifier.init();
             if (available) {
                 statusEl.className = 'alert alert-success py-1 mb-3';
-                statusEl.textContent = '✓ WebGPU is available — training and inference will run on the GPU';
+                statusEl.textContent = '✓ WebGPU is available';
             } else {
                 statusEl.className = 'alert alert-warning py-1 mb-3';
-                statusEl.textContent = '⚠ WebGPU not available — training and inference require WebGPU and will not work in this browser';
+                statusEl.textContent = '⚠ WebGPU not available — training and inference will use the CPU';
             }
         })();
 
