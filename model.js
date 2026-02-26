@@ -136,6 +136,63 @@ class DoodleClassifier {
     }
 
     /**
+     * Zero out the accumulated gradients on all learnable parameters.
+     * (torch.optim is not in the public webgpu-torch API so we manage
+     * gradients manually.)
+     */
+    _zeroGrads() {
+        for (const p of [this.W1, this.b1, this.W2, this.b2, this.W3, this.b3]) {
+            if (p) p.grad = null;
+        }
+    }
+
+    /**
+     * Manual SGD step: p ← p − lr * p.grad
+     * Detaches each updated tensor so the next forward pass starts a fresh graph.
+     */
+    _sgdStep(lr) {
+        const update = (p) => {
+            if (!p || !p.grad) return p;
+            const newVal = torch.sub(p, torch.mul(p.grad, lr));
+            const leaf   = newVal.detach();   // create a new leaf tensor
+            leaf.requiresGrad = true;
+            return leaf;
+        };
+        this.W1 = update(this.W1);
+        this.b1 = update(this.b1);
+        this.W2 = update(this.W2);
+        this.b2 = update(this.b2);
+        this.W3 = update(this.W3);
+        this.b3 = update(this.b3);
+    }
+
+    /**
+     * Mean-squared-error loss between raw logits and one-hot targets.
+     *
+     * NOTE: Cross-entropy is the theoretically preferred loss for multi-class
+     * classification, but webgpu-torch v0.3.5 does not export
+     * `torch.nn.functional.crossEntropyLoss` (it exists in source but is not
+     * in the public bundle API).  MSE with one-hot targets is used here as a
+     * fully supported alternative — it still minimises correctly and backprops
+     * through the same graph.
+     *
+     * @param {Tensor} logits – [batchSize, numClasses]
+     * @param {Array}  batch  – array of { pixels, labelIdx }
+     * @returns {Tensor} scalar loss
+     */
+    _computeLoss(logits, batch) {
+        const numClasses = this.labelNames.length;
+        const oneHotData = batch.map(d => {
+            const row = new Array(numClasses).fill(0.0);
+            row[d.labelIdx] = 1.0;
+            return row;
+        });
+        const targets = torch.tensor(oneHotData);              // [batch, numClasses]
+        const diff    = torch.sub(logits, targets);            // [batch, numClasses]
+        return torch.mean(torch.mul(diff, diff));              // scalar
+    }
+
+    /**
      * Train the model using GPU-accelerated mini-batch SGD.
      *
      * @param {number}   epochs     – number of full passes over training data
@@ -151,8 +208,6 @@ class DoodleClassifier {
         }
 
         this._initWeights();
-        const params    = [this.W1, this.b1, this.W2, this.b2, this.W3, this.b3];
-        const optimizer = new torch.optim.SGD(params, { lr });
 
         for (let epoch = 0; epoch < epochs; epoch++) {
             // Shuffle training data before each epoch using Fisher-Yates
@@ -164,15 +219,22 @@ class DoodleClassifier {
             for (let i = 0; i < shuffled.length; i += batchSize) {
                 const batch  = shuffled.slice(i, i + batchSize);
                 const xBatch = torch.tensor(batch.map(d => d.pixels));
-                const yBatch = torch.tensor(batch.map(d => d.labelIdx), 'int32');
 
-                optimizer.zeroGrad();
+                this._zeroGrads();
                 const logits = this._forward(xBatch);
-                const loss   = torch.nn.functional.crossEntropyLoss(logits, yBatch);
+                const loss   = this._computeLoss(logits, batch);
                 loss.backward();
-                optimizer.step();
+                this._sgdStep(lr);
 
-                totalLoss += await loss.item();
+                // toArrayAsync() is the correct API (tensor.item() is not exported)
+                const lossVal = await loss.toArrayAsync();
+                if (typeof lossVal === 'number') {
+                    totalLoss += lossVal;
+                } else if (Array.isArray(lossVal) && lossVal.length > 0) {
+                    totalLoss += lossVal[0];
+                } else {
+                    console.warn('Unexpected lossVal format from toArrayAsync():', lossVal);
+                }
                 batchCount++;
             }
 
@@ -197,11 +259,20 @@ class DoodleClassifier {
         const pixels = this.preprocessCanvas(canvas);
         const x      = torch.tensor([pixels]);
         const logits = this._forward(x);
-        const probs  = torch.softmax(logits, 1);
-        const data   = await probs.toArray();
+
+        // Manual softmax: exp(logits) / sum(exp(logits))
+        // torch.softmax is not a standalone export in webgpu-torch v0.3.5
+        const expLogits = torch.exp(logits);
+        // toArrayAsync() on a [1, numClasses] tensor returns [[v0, v1, ...]]
+        const expData   = await expLogits.toArrayAsync();
+        const row       = Array.isArray(expData[0]) ? expData[0] : expData;
+        if (!Array.isArray(row) || row.length !== this.labelNames.length) {
+            throw new Error('Unexpected inference output shape from model');
+        }
+        const total = row.reduce((s, v) => s + v, 0);
 
         return this.labelNames
-            .map((label, i) => ({ label, confidence: data[0][i] }))
+            .map((label, i) => ({ label, confidence: row[i] / total }))
             .sort((a, b) => b.confidence - a.confidence);
     }
 
