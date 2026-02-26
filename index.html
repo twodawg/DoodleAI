@@ -65,6 +65,14 @@
                         <div id="labelList" class="mb-3"></div>
 
                         <div class="mb-2">
+                            <label class="form-label mb-0">Model architecture</label>
+                            <select id="modelSelect" class="form-select form-select-sm mb-2">
+                                <option value="tiny">Tiny (64→32) — fastest</option>
+                                <option value="small" selected>Small (128→64) — default</option>
+                                <option value="medium">Medium (256→128)</option>
+                                <option value="large">Large (512→256) — slowest</option>
+                            </select>
+
                             <label class="form-label mb-0">
                                 Epochs: <span id="epochDisplay">100</span>
                             </label>
@@ -212,6 +220,8 @@
 
             const epochs = parseInt(document.getElementById('epochsInput').value, 10);
             const lr     = parseInt(document.getElementById('lrInput').value, 10) / 1000;
+            const model  = document.getElementById('modelSelect').value;
+            classifier.setModelConfig(model);
 
             trainBtn.disabled    = true;
             classifyBtn.disabled = true;
