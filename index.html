@@ -73,6 +73,14 @@
                                 <option value="large">Large (512→256) — slowest</option>
                             </select>
 
+                            <label class="form-label mb-0">Image size</label>
+                            <select id="imgSizeSelect" class="form-select form-select-sm mb-2">
+                                <option value="14">14×14 — smallest</option>
+                                <option value="28" selected>28×28 — default</option>
+                                <option value="56">56×56</option>
+                                <option value="112">112×112 — largest</option>
+                            </select>
+
                             <label class="form-label mb-0">
                                 Epochs: <span id="epochDisplay">100</span>
                             </label>
@@ -221,7 +229,9 @@
             const epochs = parseInt(document.getElementById('epochsInput').value, 10);
             const lr     = parseInt(document.getElementById('lrInput').value, 10) / 1000;
             const model  = document.getElementById('modelSelect').value;
+            const imgSize = parseInt(document.getElementById('imgSizeSelect').value, 10);
             classifier.setModelConfig(model);
+            classifier.setImgSize(imgSize);
 
             trainBtn.disabled    = true;
             classifyBtn.disabled = true;
@@ -317,6 +327,8 @@
                     const result = classifier.importTrainingData(data);
                     _updateSampleDisplay(result);
                     document.getElementById('trainBtn').disabled = result.labels.length < 2;
+                    // Sync the image-size selector to the loaded value
+                    document.getElementById('imgSizeSelect').value = String(classifier.imgSize);
                     // Refresh the viewer if it is currently open
                     if (document.getElementById('trainingDataViewer').style.display !== 'none') {
                         renderTrainingSamples();
@@ -342,6 +354,7 @@
         function renderTrainingSamples() {
             const gallery = document.getElementById('sampleGallery');
             const data    = classifier.exportTrainingData();
+            const sz      = data.imgSize || 28;
             gallery.innerHTML = '';
             if (data.trainingData.length === 0) {
                 gallery.innerHTML = '<p class="text-muted mb-0">No samples yet.</p>';
@@ -350,13 +363,13 @@
             data.trainingData.forEach((sample) => {
                 const label = data.labelNames[sample.labelIdx];
 
-                // Render the 28×28 pixel array (inverted, normalised) to a 56×56 canvas
+                // Render the sz×sz pixel array (inverted, normalised) to a canvas
                 const tmp = document.createElement('canvas');
-                tmp.width  = 28;
-                tmp.height = 28;
+                tmp.width  = sz;
+                tmp.height = sz;
                 const tmpCtx = tmp.getContext('2d');
-                const imgData = tmpCtx.createImageData(28, 28);
-                for (let i = 0; i < 28 * 28; i++) {
+                const imgData = tmpCtx.createImageData(sz, sz);
+                for (let i = 0; i < sz * sz; i++) {
                     const val = Math.round((1.0 - sample.pixels[i]) * 255);
                     imgData.data[i * 4]     = val;
                     imgData.data[i * 4 + 1] = val;
@@ -365,17 +378,19 @@
                 }
                 tmpCtx.putImageData(imgData, 0, 0);
 
+                // Display at 2× the stored size, minimum 56px for readability
+                const displaySize = Math.max(sz * 2, 56);
                 const cvs = document.createElement('canvas');
-                cvs.width  = 56;
-                cvs.height = 56;
+                cvs.width  = displaySize;
+                cvs.height = displaySize;
                 cvs.style.outline = '1px solid #ccc';
                 const ctx = cvs.getContext('2d');
                 ctx.imageSmoothingEnabled = false;
-                ctx.drawImage(tmp, 0, 0, 56, 56);
+                ctx.drawImage(tmp, 0, 0, displaySize, displaySize);
 
                 const lbl = document.createElement('div');
                 lbl.className  = 'small text-center text-truncate mt-1';
-                lbl.style.maxWidth = '56px';
+                lbl.style.maxWidth = displaySize + 'px';
                 lbl.textContent    = label;
 
                 const div = document.createElement('div');

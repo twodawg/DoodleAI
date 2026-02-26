@@ -5,7 +5,7 @@
  * on the CPU so that training works across all browsers.
  *
  * Architecture:
- *   Input  : 784  (28×28 grayscale, normalised, inverted)
+ *   Input  : imgSize×imgSize (configurable grayscale, normalised, inverted)
  *   Hidden1: configurable (ReLU)
  *   Hidden2: configurable (ReLU)
  *   Output : N    (one neuron per class)
@@ -13,8 +13,11 @@
  * All weight matrices are stored as row-major Float32Arrays.
  */
 
-const IMG_SIZE   = 28;   // resize drawings to 28×28 before feeding the net
+const IMG_SIZE   = 28;   // default image size
 const BATCH_SIZE = 8;
+
+/** Supported image sizes for preprocessing. */
+const IMG_SIZE_OPTIONS = [14, 28, 56, 112];
 
 /** Preset model architectures available for selection. */
 const MODEL_CONFIGS = {
@@ -36,6 +39,7 @@ class DoodleClassifier {
         // Default to the 'small' architecture (original behaviour)
         this.hidden1Size  = MODEL_CONFIGS.small.hidden1;
         this.hidden2Size  = MODEL_CONFIGS.small.hidden2;
+        this.imgSize      = IMG_SIZE;   // default 28×28
     }
 
     /**
@@ -50,6 +54,20 @@ class DoodleClassifier {
         this.modelTrained = false;
     }
 
+    /**
+     * Set the image size used for preprocessing.  Must be called before
+     * adding training samples so that all pixel arrays have a consistent length.
+     * @param {number} size – one of the values in IMG_SIZE_OPTIONS (e.g. 28)
+     */
+    setImgSize(size) {
+        if (!IMG_SIZE_OPTIONS.includes(size)) {
+            throw new Error('Unsupported image size: ' + size +
+                '. Supported sizes: ' + IMG_SIZE_OPTIONS.join(', '));
+        }
+        this.imgSize      = size;
+        this.modelTrained = false;
+    }
+
     /** Initialise WebGPU.  Must be called before train() / predict(). */
     async init() {
         try {
@@ -61,18 +79,19 @@ class DoodleClassifier {
     }
 
     /**
-     * Resize a canvas to 28×28 and convert to a normalised grayscale float
-     * array with the background mapped to 0 and the drawn strokes to 1.
+     * Resize a canvas to imgSize×imgSize and convert to a normalised grayscale
+     * float array with the background mapped to 0 and the drawn strokes to 1.
      */
     preprocessCanvas(canvas) {
+        const sz  = this.imgSize;
         const tmp = document.createElement('canvas');
-        tmp.width  = IMG_SIZE;
-        tmp.height = IMG_SIZE;
+        tmp.width  = sz;
+        tmp.height = sz;
         const ctx = tmp.getContext('2d');
-        ctx.drawImage(canvas, 0, 0, IMG_SIZE, IMG_SIZE);
-        const { data } = ctx.getImageData(0, 0, IMG_SIZE, IMG_SIZE);
+        ctx.drawImage(canvas, 0, 0, sz, sz);
+        const { data } = ctx.getImageData(0, 0, sz, sz);
         const pixels = [];
-        for (let i = 0; i < IMG_SIZE * IMG_SIZE; i++) {
+        for (let i = 0; i < sz * sz; i++) {
             const gray = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3.0;
             pixels.push(1.0 - gray / 255.0);   // invert: white bg → 0, ink → 1
         }
@@ -192,7 +211,7 @@ class DoodleClassifier {
     /** Allocate He-initialised weight matrices and zero bias vectors. */
     _initWeights() {
         const n         = this.labelNames.length;
-        const inputSize = IMG_SIZE * IMG_SIZE;   // 784
+        const inputSize = this.imgSize * this.imgSize;
         const h1Size    = this.hidden1Size;
         const h2Size    = this.hidden2Size;
 
@@ -214,7 +233,7 @@ class DoodleClassifier {
      */
     _forward(x, batchSize) {
         const n         = this.labelNames.length;
-        const inputSize = IMG_SIZE * IMG_SIZE;   // 784
+        const inputSize = this.imgSize * this.imgSize;
         const h1Size    = this.hidden1Size;
         const h2Size    = this.hidden2Size;
 
@@ -294,7 +313,7 @@ class DoodleClassifier {
         for (let i = 0; i < dh1Pre.length; i++) dh1Pre[i] = h1Pre[i] > 0 ? dh1[i] : 0;
 
         // ── Layer 1 ──────────────────────────────────────────────────────────
-        const dW1 = this._matmulTA(x, dh1Pre, bs, IMG_SIZE * IMG_SIZE, h1Size); // [784, h1]
+        const dW1 = this._matmulTA(x, dh1Pre, bs, this.imgSize * this.imgSize, h1Size); // [inputSize, h1]
         const db1 = this._sumCols(dh1Pre, bs, h1Size);
 
         // ── SGD update ────────────────────────────────────────────────────────
@@ -336,10 +355,10 @@ class DoodleClassifier {
                 const bs    = batch.length;
 
                 // Build flat input and one-hot target arrays for this mini-batch
-                const x       = new Float32Array(bs * IMG_SIZE * IMG_SIZE);
+                const x       = new Float32Array(bs * this.imgSize * this.imgSize);
                 const targets = new Float32Array(bs * n);
                 for (let b = 0; b < bs; b++) {
-                    x.set(batch[b].pixels, b * IMG_SIZE * IMG_SIZE);
+                    x.set(batch[b].pixels, b * this.imgSize * this.imgSize);
                     targets[b * n + batch[b].labelIdx] = 1.0;
                 }
 
@@ -393,6 +412,7 @@ class DoodleClassifier {
      */
     exportTrainingData() {
         return {
+            imgSize: this.imgSize,
             labelNames: [...this.labelNames],
             trainingData: this.trainingData.map(d => ({
                 pixels: Array.from(d.pixels),
@@ -411,8 +431,13 @@ class DoodleClassifier {
         if (!data || !Array.isArray(data.labelNames) || !Array.isArray(data.trainingData)) {
             throw new Error('Invalid training data format');
         }
+        // imgSize is optional for backward-compatibility; default to 28 if absent
+        const imgSize = (data.imgSize !== undefined) ? data.imgSize : IMG_SIZE;
+        if (!IMG_SIZE_OPTIONS.includes(imgSize)) {
+            throw new Error('Unsupported imgSize in training data: ' + imgSize);
+        }
         const numLabels = data.labelNames.length;
-        const pixelLen  = IMG_SIZE * IMG_SIZE;  // 784
+        const pixelLen  = imgSize * imgSize;
 
         this.labelNames   = [...data.labelNames];
         this.trainingData = data.trainingData.map((d, i) => {
@@ -427,6 +452,7 @@ class DoodleClassifier {
             }
             return { pixels: d.pixels, labelIdx: d.labelIdx };
         });
+        this.imgSize      = imgSize;
         this.modelTrained = false;
 
         return {
