@@ -432,7 +432,18 @@ class DoodleClassifier {
             throw new Error('Invalid training data format');
         }
         // imgSize is optional for backward-compatibility; default to 28 if absent
-        const imgSize = (data.imgSize !== undefined) ? data.imgSize : IMG_SIZE;
+        let imgSize = (data.imgSize !== undefined) ? data.imgSize : IMG_SIZE;
+        // If the declared imgSize doesn't match the actual pixel count of the
+        // first sample, try to infer the true imgSize from the pixel data.
+        if (data.trainingData.length > 0 && Array.isArray(data.trainingData[0].pixels)) {
+            const actualCount   = data.trainingData[0].pixels.length;
+            const inferredSize  = Math.round(Math.sqrt(actualCount));
+            if (inferredSize * inferredSize === actualCount &&
+                    IMG_SIZE_OPTIONS.includes(inferredSize) &&
+                    inferredSize !== imgSize) {
+                imgSize = inferredSize;
+            }
+        }
         if (!IMG_SIZE_OPTIONS.includes(imgSize)) {
             throw new Error('Unsupported imgSize in training data: ' + imgSize);
         }
