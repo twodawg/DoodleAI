@@ -107,10 +107,7 @@ class DoodleClassifier {
         if (!trimmed) throw new Error('Label cannot be empty');
 
         const pixels = this.preprocessCanvas(canvas);
-        if (!this.labelNames.includes(trimmed)) {
-            this.labelNames.push(trimmed);
-        }
-        const labelIdx = this.labelNames.indexOf(trimmed);
+        const labelIdx = this._ensureLabel(trimmed);
         this.trainingData.push({ pixels, labelIdx });
         this.modelTrained = false;  // requires re-training after new data
 
@@ -433,6 +430,18 @@ class DoodleClassifier {
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
+    /**
+     * Ensure `label` exists in labelNames, adding it if necessary.
+     * Returns the index of the label.
+     * @param {string} label – already trimmed/lowercased
+     */
+    _ensureLabel(label) {
+        if (!this.labelNames.includes(label)) {
+            this.labelNames.push(label);
+        }
+        return this.labelNames.indexOf(label);
+    }
+
     /** Remove labels that have no remaining samples; renumber labelIdx values. */
     _pruneUnusedLabels() {
         const usedIndices = new Set(this.trainingData.map(d => d.labelIdx));
@@ -493,10 +502,7 @@ class DoodleClassifier {
         if (index < 0 || index >= this.trainingData.length) {
             throw new Error('Sample index out of bounds: ' + index);
         }
-        if (!this.labelNames.includes(trimmed)) {
-            this.labelNames.push(trimmed);
-        }
-        this.trainingData[index].labelIdx = this.labelNames.indexOf(trimmed);
+        this.trainingData[index].labelIdx = this._ensureLabel(trimmed);
         this._pruneUnusedLabels();
         this.modelTrained = false;
         return this._summary();
@@ -557,6 +563,29 @@ class DoodleClassifier {
                 ).length
             }))
         };
+    }
+
+    /**
+     * Replace the pixels (and optionally the label) of an existing training
+     * sample with the current canvas drawing.
+     * Returns the same summary object as addSample() for convenience.
+     *
+     * @param {number}          index    – zero-based position in trainingData
+     * @param {HTMLCanvasElement} canvas – the drawing canvas to sample from
+     * @param {string}          newLabel – desired label (trimmed, lowercased)
+     */
+    replaceSample(index, canvas, newLabel) {
+        if (index < 0 || index >= this.trainingData.length) {
+            throw new Error('Sample index out of bounds: ' + index);
+        }
+        const trimmed = newLabel.trim().toLowerCase();
+        if (!trimmed) throw new Error('Label cannot be empty');
+
+        this.trainingData[index].pixels = this.preprocessCanvas(canvas);
+        this.trainingData[index].labelIdx = this._ensureLabel(trimmed);
+        this._pruneUnusedLabels();
+        this.modelTrained = false;
+        return this._summary();
     }
 
     /** Remove all stored samples and reset model weights. */

@@ -6,6 +6,50 @@
 
 	return dataUrl;
 }
+
+// Tool state: 'draw' | 'erase'
+let _currentTool = 'draw';
+
+/** Switch between draw and erase modes. */
+function setDrawTool(tool) {
+	_currentTool = tool;
+	const canvas = document.getElementById('scratchPad');
+	canvas.style.cursor = (tool === 'erase') ? 'cell' : 'crosshair';
+}
+
+/**
+ * Load a stored training sample (pixel float array) back onto the drawing
+ * canvas so the user can edit it.
+ *
+ * @param {number[]} pixels  – normalised grayscale array (0 = white, 1 = black)
+ * @param {number}   imgSize – width/height of the stored sample (e.g. 28, 56)
+ */
+function loadSampleToCanvas(pixels, imgSize) {
+	const canvas = document.getElementById('scratchPad');
+	const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+
+	// Build a small canvas at the stored resolution
+	const tmp    = document.createElement('canvas');
+	tmp.width    = imgSize;
+	tmp.height   = imgSize;
+	const tmpCtx = tmp.getContext('2d');
+	const imgData = tmpCtx.createImageData(imgSize, imgSize);
+	for (let i = 0; i < imgSize * imgSize; i++) {
+		const val = Math.round((1.0 - pixels[i]) * 255);
+		imgData.data[i * 4]     = val;
+		imgData.data[i * 4 + 1] = val;
+		imgData.data[i * 4 + 2] = val;
+		imgData.data[i * 4 + 3] = 255;
+	}
+	tmpCtx.putImageData(imgData, 0, 0);
+
+	// Clear the scratchPad to white, then scale the sample up to fill it
+	ctx.fillStyle = 'white';
+	ctx.fillRect(0, 0, canvas.width, canvas.height);
+	ctx.imageSmoothingEnabled = false;
+	ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
+}
+
 function initDraw() {
 	const canvas = document.getElementById('scratchPad');
 	const toolbar = document.getElementById('toolbar');
@@ -51,8 +95,12 @@ function initDraw() {
 	
 	const canvasMouseDown = (e) => {
 		isPainting = true;
-		const color = document.getElementById('stroke');
-		ctx.strokeStyle = color.value;
+		if (_currentTool === 'erase') {
+			ctx.strokeStyle = 'white';
+		} else {
+			const color = document.getElementById('stroke');
+			ctx.strokeStyle = color.value;
+		}
 
 		startX = e.clientX;
 		startY = e.clientY;
@@ -78,6 +126,9 @@ function initDraw() {
 
 		ctx.lineWidth = lineWidth;
 		ctx.lineCap = 'round';
+		if (_currentTool === 'erase') {
+			ctx.strokeStyle = 'white';
+		}
 
 		//ctx.lineTo(e.clientX - canvasOffsetX, e.clientY);
 		var mousePos = getMousePos(canvas, e);

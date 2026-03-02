@@ -35,6 +35,9 @@
                                 <label for="lineWidth" class="mb-0">Width</label>
                                 <input id="lineWidth" name="lineWidth" type="number" value="5" min="1" max="20"
                                     class="form-control form-control-sm" style="width:60px">
+                                <button type="button" id="eraserBtn"
+                                    class="btn btn-sm btn-outline-secondary"
+                                    onclick="toggleEraser(this)">Eraser</button>
                                 <button type="button" id="clear"
                                     class="btn btn-sm btn-outline-secondary">Clear</button>
                             </div>
@@ -49,8 +52,13 @@
                                 <button type="button" class="btn btn-success"
                                     onclick="addSample()">Add to Training Set</button>
                             </div>
-                            <button type="button" class="btn btn-sm btn-outline-secondary mt-2"
-                                onclick="downloadImage()">Download PNG</button>
+                            <div class="d-flex gap-2 mt-2">
+                                <button type="button" id="replaceSampleBtn"
+                                    class="btn btn-sm btn-warning" style="display:none"
+                                    onclick="replaceSample()">Replace Sample</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    onclick="downloadImage()">Download PNG</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -74,7 +82,8 @@
                             </select>
 
                             <label class="form-label mb-0">Image size</label>
-                            <select id="imgSizeSelect" class="form-select form-select-sm mb-2">
+                            <select id="imgSizeSelect" class="form-select form-select-sm mb-2"
+                                onchange="classifier.setImgSize(parseInt(this.value, 10))">
                                 <option value="14">14×14 — smallest</option>
                                 <option value="28" selected>28×28 — default</option>
                                 <option value="56">56×56</option>
@@ -180,6 +189,22 @@
 
         // ── Step 1 helpers ─────────────────────────────────────────────
 
+        /** Tracks which sample index is currently being edited (−1 = none). */
+        let _editingIdx = -1;
+
+        function toggleEraser(btn) {
+            const isErasing = btn.classList.contains('active');
+            if (isErasing) {
+                setDrawTool('draw');
+                btn.classList.remove('active', 'btn-secondary');
+                btn.classList.add('btn-outline-secondary');
+            } else {
+                setDrawTool('erase');
+                btn.classList.remove('btn-outline-secondary');
+                btn.classList.add('active', 'btn-secondary');
+            }
+        }
+
         function addSample() {
             const canvas = document.getElementById('scratchPad');
             const label  = document.getElementById('imageLabel').value.trim();
@@ -218,6 +243,45 @@
         }
 
         // ── Step 2 helpers ─────────────────────────────────────────────
+
+        /**
+         * Load a training sample onto the drawing canvas for editing.
+         * Shows the "Replace Sample" button and hides the training viewer.
+         */
+        function editSample(idx, pixels, imgSize, label) {
+            _editingIdx = idx;
+            loadSampleToCanvas(pixels, imgSize);
+            document.getElementById('imageLabel').value = label;
+            document.getElementById('replaceSampleBtn').style.display = 'inline-block';
+            // Close the viewer and scroll to the canvas
+            document.getElementById('trainingDataViewer').style.display = 'none';
+            document.getElementById('scratchPad').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        /**
+         * Replace the currently-edited training sample with the canvas contents
+         * and the current label value.
+         */
+        function replaceSample() {
+            if (_editingIdx < 0) return;
+            const canvas = document.getElementById('scratchPad');
+            const label  = document.getElementById('imageLabel').value.trim();
+            if (!label) { alert('Please enter a label for your drawing.'); return; }
+            try {
+                const result = classifier.replaceSample(_editingIdx, canvas, label);
+                _updateSampleDisplay(result);
+                document.getElementById('trainBtn').disabled = result.labels.length < 2;
+            } catch (e) {
+                alert('Could not replace sample: ' + e.message);
+                return;
+            }
+            _editingIdx = -1;
+            document.getElementById('replaceSampleBtn').style.display = 'none';
+            // Clear the canvas ready for the next drawing
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
 
         async function trainModel() {
             const trainBtn    = document.getElementById('trainBtn');
@@ -264,6 +328,8 @@
         function clearData() {
             if (!confirm('Clear all training data and reset the model?')) return;
             classifier.clearData();
+            _editingIdx = -1;
+            document.getElementById('replaceSampleBtn').style.display = 'none';
             document.getElementById('sampleStats').textContent    = 'No training samples yet.';
             document.getElementById('labelList').innerHTML         = '';
             document.getElementById('trainBtn').disabled          = true;
@@ -406,6 +472,21 @@
                     renderTrainingSamples();
                 });
 
+                // Sample ID label
+                const idLabel = document.createElement('small');
+                idLabel.className = 'text-muted';
+                idLabel.textContent = '#' + idx;
+
+                // Edit button – loads sample onto drawing canvas
+                const editBtn = document.createElement('button');
+                editBtn.type        = 'button';
+                editBtn.className   = 'btn btn-sm btn-outline-primary mt-1';
+                editBtn.style.width = displaySize + 'px';
+                editBtn.textContent = 'Edit';
+                editBtn.addEventListener('click', () => {
+                    editSample(idx, sample.pixels, sz, label);
+                });
+
                 // Delete button
                 const delBtn = document.createElement('button');
                 delBtn.type        = 'button';
@@ -413,6 +494,10 @@
                 delBtn.style.width = displaySize + 'px';
                 delBtn.textContent = 'Delete';
                 delBtn.addEventListener('click', () => {
+                    if (_editingIdx === idx) {
+                        _editingIdx = -1;
+                        document.getElementById('replaceSampleBtn').style.display = 'none';
+                    }
                     const result = classifier.removeSample(idx);
                     _updateSampleDisplay(result);
                     document.getElementById('trainBtn').disabled = result.labels.length < 2;
@@ -421,8 +506,10 @@
 
                 const div = document.createElement('div');
                 div.className = 'd-flex flex-column align-items-center';
+                div.appendChild(idLabel);
                 div.appendChild(cvs);
                 div.appendChild(sel);
+                div.appendChild(editBtn);
                 div.appendChild(delBtn);
                 gallery.appendChild(div);
             });
