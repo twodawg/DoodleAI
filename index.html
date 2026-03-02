@@ -360,7 +360,7 @@
                 gallery.innerHTML = '<p class="text-muted mb-0">No samples yet.</p>';
                 return;
             }
-            data.trainingData.forEach((sample) => {
+            data.trainingData.forEach((sample, idx) => {
                 const label = data.labelNames[sample.labelIdx];
 
                 // Render the sz×sz pixel array (inverted, normalised) to a canvas
@@ -388,15 +388,42 @@
                 ctx.imageSmoothingEnabled = false;
                 ctx.drawImage(tmp, 0, 0, displaySize, displaySize);
 
-                const lbl = document.createElement('div');
-                lbl.className  = 'small text-center text-truncate mt-1';
-                lbl.style.maxWidth = displaySize + 'px';
-                lbl.textContent    = label;
+                // Label selector – allows relabelling to any existing label
+                const sel = document.createElement('select');
+                sel.className = 'form-select form-select-sm mt-1';
+                sel.style.maxWidth = displaySize + 'px';
+                data.labelNames.forEach(lName => {
+                    const opt = document.createElement('option');
+                    opt.value       = lName;
+                    opt.textContent = lName;
+                    if (lName === label) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+                sel.addEventListener('change', () => {
+                    const result = classifier.relabelSample(idx, sel.value);
+                    _updateSampleDisplay(result);
+                    document.getElementById('trainBtn').disabled = result.labels.length < 2;
+                    renderTrainingSamples();
+                });
+
+                // Delete button
+                const delBtn = document.createElement('button');
+                delBtn.type        = 'button';
+                delBtn.className   = 'btn btn-sm btn-outline-danger mt-1';
+                delBtn.style.width = displaySize + 'px';
+                delBtn.textContent = 'Delete';
+                delBtn.addEventListener('click', () => {
+                    const result = classifier.removeSample(idx);
+                    _updateSampleDisplay(result);
+                    document.getElementById('trainBtn').disabled = result.labels.length < 2;
+                    renderTrainingSamples();
+                });
 
                 const div = document.createElement('div');
                 div.className = 'd-flex flex-column align-items-center';
                 div.appendChild(cvs);
-                div.appendChild(lbl);
+                div.appendChild(sel);
+                div.appendChild(delBtn);
                 gallery.appendChild(div);
             });
         }

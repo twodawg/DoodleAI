@@ -409,16 +409,97 @@ class DoodleClassifier {
     /**
      * Export training data as a plain JSON-serialisable object.
      * The returned value can be passed to importTrainingData() to restore state.
+     *
+     * imgSize is derived from the actual pixel count of the stored samples so
+     * that the exported value is always correct, even when setImgSize() was
+     * called after samples had already been captured at a different resolution.
      */
     exportTrainingData() {
+        let imgSize = this.imgSize;
+        if (this.trainingData.length > 0) {
+            const pixelLen = this.trainingData[0].pixels.length;
+            const inferred = Math.round(Math.sqrt(pixelLen));
+            if (inferred * inferred === pixelLen) imgSize = inferred;
+        }
         return {
-            imgSize: this.imgSize,
+            imgSize,
             labelNames: [...this.labelNames],
             trainingData: this.trainingData.map(d => ({
                 pixels: Array.from(d.pixels),
                 labelIdx: d.labelIdx
             }))
         };
+    }
+
+    // ── Private helpers ──────────────────────────────────────────────────────
+
+    /** Remove labels that have no remaining samples; renumber labelIdx values. */
+    _pruneUnusedLabels() {
+        const usedIndices = new Set(this.trainingData.map(d => d.labelIdx));
+        if (usedIndices.size === this.labelNames.length) return;
+        const remap = new Map();
+        let   next  = 0;
+        this.labelNames = this.labelNames.filter((_, oldIdx) => {
+            if (!usedIndices.has(oldIdx)) return false;
+            remap.set(oldIdx, next++);
+            return true;
+        });
+        this.trainingData.forEach(d => { d.labelIdx = remap.get(d.labelIdx); });
+    }
+
+    /** Returns the standard training-status summary object. */
+    _summary() {
+        return {
+            totalSamples: this.trainingData.length,
+            labels: [...this.labelNames],
+            counts: this.labelNames.map(l => ({
+                label: l,
+                count: this.trainingData.filter(
+                    d => d.labelIdx === this.labelNames.indexOf(l)
+                ).length
+            }))
+        };
+    }
+
+    /**
+     * Remove a single training sample by its index.
+     * Labels that no longer have any samples are pruned automatically.
+     * Returns the same summary object as addSample() for convenience.
+     *
+     * @param {number} index – zero-based position in trainingData
+     */
+    removeSample(index) {
+        if (index < 0 || index >= this.trainingData.length) {
+            throw new Error('Sample index out of bounds: ' + index);
+        }
+        this.trainingData.splice(index, 1);
+        this._pruneUnusedLabels();
+        this.modelTrained = false;
+        return this._summary();
+    }
+
+    /**
+     * Change the label of a training sample by its index.
+     * If newLabel does not yet exist it is added to labelNames.
+     * Labels that have no remaining samples are pruned afterwards.
+     * Returns the same summary object as addSample() for convenience.
+     *
+     * @param {number} index    – zero-based position in trainingData
+     * @param {string} newLabel – the desired label (trimmed, lowercased)
+     */
+    relabelSample(index, newLabel) {
+        const trimmed = newLabel.trim().toLowerCase();
+        if (!trimmed) throw new Error('Label cannot be empty');
+        if (index < 0 || index >= this.trainingData.length) {
+            throw new Error('Sample index out of bounds: ' + index);
+        }
+        if (!this.labelNames.includes(trimmed)) {
+            this.labelNames.push(trimmed);
+        }
+        this.trainingData[index].labelIdx = this.labelNames.indexOf(trimmed);
+        this._pruneUnusedLabels();
+        this.modelTrained = false;
+        return this._summary();
     }
 
     /**
@@ -432,7 +513,18 @@ class DoodleClassifier {
             throw new Error('Invalid training data format');
         }
         // imgSize is optional for backward-compatibility; default to 28 if absent
-        const imgSize = (data.imgSize !== undefined) ? data.imgSize : IMG_SIZE;
+        let imgSize = (data.imgSize !== undefined) ? data.imgSize : IMG_SIZE;
+        // If the declared imgSize doesn't match the actual pixel count of the
+        // first sample, try to infer the true imgSize from the pixel data.
+        if (data.trainingData.length > 0 && Array.isArray(data.trainingData[0].pixels)) {
+            const actualCount   = data.trainingData[0].pixels.length;
+            const inferredSize  = Math.round(Math.sqrt(actualCount));
+            if (inferredSize * inferredSize === actualCount &&
+                    IMG_SIZE_OPTIONS.includes(inferredSize) &&
+                    inferredSize !== imgSize) {
+                imgSize = inferredSize;
+            }
+        }
         if (!IMG_SIZE_OPTIONS.includes(imgSize)) {
             throw new Error('Unsupported imgSize in training data: ' + imgSize);
         }
