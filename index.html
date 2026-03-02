@@ -126,6 +126,16 @@
                                 <input type="file" id="loadDataInput" accept=".json"
                                     style="display:none" onchange="loadTrainingData(this)">
                             </label>
+                            <div class="input-group input-group-sm" style="width:auto">
+                                <select id="githubSampleSelect" class="form-select form-select-sm">
+                                    <option value="">— GitHub Samples —</option>
+                                    <option value="rock-paper-scissors.json">Rock Paper Scissors</option>
+                                    <option value="hotdog.json">Hotdog</option>
+                                    <option value="CIFAR 10.json">CIFAR 10</option>
+                                </select>
+                                <button type="button" class="btn btn-sm btn-outline-primary"
+                                    onclick="loadGithubSample()">Load</button>
+                            </div>
                             <button type="button" id="viewSamplesBtn" class="btn btn-sm btn-outline-secondary"
                                 onclick="toggleTrainingView()">View Samples</button>
                             <button type="button" class="btn btn-sm btn-outline-danger"
@@ -405,6 +415,28 @@
                 input.value = ''; // reset so the same file can be reloaded
             };
             reader.readAsText(file);
+        }
+
+        async function loadGithubSample() {
+            const sel = document.getElementById('githubSampleSelect');
+            const filename = sel.value;
+            if (!filename) { alert('Please select a sample file to load.'); return; }
+            const base = 'https://raw.githubusercontent.com/twodawg/DoodleAI/main/Samples/';
+            try {
+                const resp = await fetch(base + encodeURIComponent(filename));
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data   = await resp.json();
+                const result = classifier.importTrainingData(data);
+                _updateSampleDisplay(result);
+                document.getElementById('trainBtn').disabled = result.labels.length < 2;
+                document.getElementById('imgSizeSelect').value = String(classifier.imgSize);
+                if (document.getElementById('trainingDataViewer').style.display !== 'none') {
+                    renderTrainingSamples();
+                }
+                sel.value = '';
+            } catch (err) {
+                alert('Failed to load GitHub sample: ' + err.message);
+            }
         }
 
         function toggleTrainingView() {
